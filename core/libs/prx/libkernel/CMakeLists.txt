@@ -587,7 +587,7 @@ if(BUILD_TESTING)
     target_link_libraries(guest_raise_exception_tests PRIVATE libkernel libc)
     configure_windows_unwind(guest_raise_exception_tests)
     add_test(NAME guest_raise_exception COMMAND guest_raise_exception_tests)
-    set_tests_properties(guest_raise_exception PROPERTIES TIMEOUT 30)
+    set_tests_properties(guest_raise_exception PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
     if(WIN32)
         set_tests_properties(guest_raise_exception PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")

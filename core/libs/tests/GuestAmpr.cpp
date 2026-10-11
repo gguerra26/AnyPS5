@@ -1055,9 +1055,11 @@ int main() {
     TestZeroFilledBuffer();
     TestResolveFailures();
     TestGatherScatter();
-    TestAmmRangesAboveHintedMaps();
-    TestAmm();
-    TestAmmRemapAndProtect();
-    TestAmmPrt();
+    if (GuestArena::GuestArenaAvailable_nid_postfix()) {
+        TestAmmRangesAboveHintedMaps();
+        TestAmm();
+        TestAmmRemapAndProtect();
+        TestAmmPrt();
+    }
     return 0;
 }

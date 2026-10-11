@@ -1,3 +1,10 @@
+#ifdef __APPLE__
+#include <cstdio>
+int main() {
+    std::puts("sceKernelRaiseException is not implemented on macOS: skipped");
+    return 77;
+}
+#else
 #include "SceTypes.hpp"
 #include <atomic>
 #include <chrono>
@@ -661,3 +668,4 @@ int main() {
     NestedWaitKeepsOuterWake();
     Require(sceKernelRemoveExceptionHandler(SIGUSR1) == 0);
 }
+#endif

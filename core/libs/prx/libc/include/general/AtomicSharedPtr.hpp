@@ -30,6 +30,15 @@ public:
         std::lock_guard lock(mutex);
         return std::exchange(value, std::move(desired));
     }
+    bool compare_exchange_strong(std::shared_ptr<T>& expected, std::shared_ptr<T> desired, std::memory_order = std::memory_order_seq_cst) noexcept {
+        std::lock_guard lock(mutex);
+        if (value == expected) {
+            value = std::move(desired);
+            return true;
+        }
+        expected = value;
+        return false;
+    }
     operator std::shared_ptr<T>() const noexcept { return load(); }
     void operator=(std::shared_ptr<T> desired) noexcept { store(std::move(desired)); }
 

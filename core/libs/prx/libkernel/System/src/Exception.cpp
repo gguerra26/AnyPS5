@@ -13,7 +13,7 @@
 #include <stdexcept>
 #ifdef _WIN32
 #include <windows.h>
-#else
+#elif !defined(__APPLE__)
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
@@ -302,7 +302,7 @@ bool RaiseOn(Pthread thread, GuestExceptionHandler handler, int signum) {
     ResumeThread(native);
     return true;
 }
-#else
+#elif !defined(__APPLE__)
 constexpr int HostSignal = SIGUSR1;
 constexpr std::size_t FxsaveRegisterBytes = 416;
 
@@ -509,6 +509,9 @@ int APS5_VABI sceKernelRaiseException(Pthread thread, int signum) {
  if (handler == nullptr) throw std::runtime_error("sceKernelRaiseException: no handler installed for the signal");
 #ifdef _WIN32
  return RaiseOn(thread, handler, signum) ? 0 : SCE_KERNEL_ERROR_ESRCH;
+#elif defined(__APPLE__)
+ NotImplemented_nid_no_patch(__func__);
+ return 0;
 #else
  return RaiseOn(thread) ? 0 : SCE_KERNEL_ERROR_ESRCH;
 #endif
