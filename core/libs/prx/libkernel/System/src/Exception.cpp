@@ -13,13 +13,15 @@
 #include <stdexcept>
 #ifdef _WIN32
 #include <windows.h>
-#elif !defined(__APPLE__)
+#else
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
 #include <system_error>
 #include <pthread.h>
+#ifndef __APPLE__
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -302,10 +304,68 @@ bool RaiseOn(Pthread thread, GuestExceptionHandler handler, int signum) {
     ResumeThread(native);
     return true;
 }
-#elif !defined(__APPLE__)
+#else
 constexpr int HostSignal = SIGUSR1;
 constexpr std::size_t FxsaveRegisterBytes = 416;
 
+#ifdef __APPLE__
+using HostFloatState = decltype(std::declval<mcontext_t>()->__fs);
+
+constexpr std::size_t FxsaveImageOffset = offsetof(HostFloatState, __fpu_fcw);
+static_assert(offsetof(HostFloatState, __fpu_mxcsr) - FxsaveImageOffset == 24 && offsetof(HostFloatState, __fpu_xmm0) - FxsaveImageOffset == 160
+    && offsetof(HostFloatState, __fpu_xmm15) + 16 - FxsaveImageOffset == FxsaveRegisterBytes, "the Darwin float state is not an FXSAVE image");
+constexpr std::size_t FxsaveImageBytes = 512;
+
+void FromHost(const mcontext_t& host, GuestMcontext& m) {
+    const auto& g = host->__ss;
+    m.rdi = g.__rdi;
+    m.rsi = g.__rsi;
+    m.rdx = g.__rdx;
+    m.rcx = g.__rcx;
+    m.r8 = g.__r8;
+    m.r9 = g.__r9;
+    m.rax = g.__rax;
+    m.rbx = g.__rbx;
+    m.rbp = g.__rbp;
+    m.r10 = g.__r10;
+    m.r11 = g.__r11;
+    m.r12 = g.__r12;
+    m.r13 = g.__r13;
+    m.r14 = g.__r14;
+    m.r15 = g.__r15;
+    m.rip = g.__rip;
+    m.rsp = g.__rsp;
+    m.rflags = g.__rflags;
+    m.cs = g.__cs & 0xffffu;
+    m.ss = 0;
+    m.len = sizeof(GuestMcontext);
+    static_assert(FxsaveImageBytes <= sizeof(m.fpstate));
+    std::memcpy(m.fpstate, reinterpret_cast<const unsigned char*>(&host->__fs) + FxsaveImageOffset, FxsaveImageBytes);
+}
+
+void ToHost(const GuestMcontext& m, mcontext_t& host) {
+    auto& g = host->__ss;
+    g.__rdi = m.rdi;
+    g.__rsi = m.rsi;
+    g.__rdx = m.rdx;
+    g.__rcx = m.rcx;
+    g.__r8 = m.r8;
+    g.__r9 = m.r9;
+    g.__rax = m.rax;
+    g.__rbx = m.rbx;
+    g.__rbp = m.rbp;
+    g.__r10 = m.r10;
+    g.__r11 = m.r11;
+    g.__r12 = m.r12;
+    g.__r13 = m.r13;
+    g.__r14 = m.r14;
+    g.__r15 = m.r15;
+    g.__rip = m.rip;
+    g.__rsp = m.rsp;
+    g.__rflags = m.rflags;
+    std::memcpy(reinterpret_cast<unsigned char*>(&host->__fs) + FxsaveImageOffset, m.fpstate, FxsaveRegisterBytes);
+}
+#else
 void FromHost(const mcontext_t& host, GuestMcontext& m) {
     const auto* g = host.gregs;
     m.rdi = g[REG_RDI];
@@ -355,6 +415,7 @@ void ToHost(const GuestMcontext& m, mcontext_t& host) {
     g[REG_EFL] = static_cast<greg_t>(m.rflags);
     if (host.fpregs != nullptr) std::memcpy(host.fpregs, m.fpstate, FxsaveRegisterBytes);
 }
+#endif
 
 void Deliver(int, siginfo_t*, void* context) {
     const auto handler = Handler(RaisedSignal);
@@ -509,9 +570,6 @@ int APS5_VABI sceKernelRaiseException(Pthread thread, int signum) {
  if (handler == nullptr) throw std::runtime_error("sceKernelRaiseException: no handler installed for the signal");
 #ifdef _WIN32
  return RaiseOn(thread, handler, signum) ? 0 : SCE_KERNEL_ERROR_ESRCH;
-#elif defined(__APPLE__)
- NotImplemented_nid_no_patch(__func__);
- return 0;
 #else
  return RaiseOn(thread) ? 0 : SCE_KERNEL_ERROR_ESRCH;
 #endif
