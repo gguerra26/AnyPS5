@@ -5,6 +5,7 @@
 #include <array>
 #include <exception>
 #include <future>
+#include <mutex>
 #include <thread>
 #include <cstddef>
 #include <typeinfo>
@@ -155,12 +156,34 @@ static void testUncaughtExceptions() {
     if (seen != 1) throw std::runtime_error("unwinding did not count its exception");
 }
 
+static int guestFrameDestroyed;
+struct GuestFrameGuard { ~GuestFrameGuard() { ++guestFrameDestroyed; } };
+static void ThrowThroughGuestFrames(int depth) {
+    GuestFrameGuard guard;
+    if (depth) { ThrowThroughGuestFrames(depth - 1); return; }
+    throw std::runtime_error("through guest frames");
+}
+
+static void testUnwindThroughGuestFrames() {
+    for (int depth : {0, 1, 7, 64}) {
+        guestFrameDestroyed = 0;
+        try {
+            ThrowThroughGuestFrames(depth);
+            throw std::logic_error("guest frame did not propagate");
+        } catch (const std::runtime_error& error) {
+            if (std::strcmp(error.what(), "through guest frames")) throw;
+        }
+        if (guestFrameDestroyed != depth + 1) throw std::runtime_error("unwinding through guest frames skipped a destructor");
+    }
+}
+
 int main() {
     TestTypeInfoVtables();
     testExceptionPointer();
     testFutureException();
     testMadeExceptionPointer();
     testUncaughtExceptions();
+    testUnwindThroughGuestFrames();
     try {
         Rethrow();
         return 1;

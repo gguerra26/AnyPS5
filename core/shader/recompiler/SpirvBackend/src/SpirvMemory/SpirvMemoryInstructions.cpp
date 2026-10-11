@@ -642,6 +642,15 @@ std::uint32_t EmitAtomicOperation(SpirvValueEmitContext& ctx, const IrValue& ins
     return old;
 }
 
+template<typename TUpdate>
+std::uint32_t LockedLdsUpdate(SpirvEmitterState& state, std::uint32_t type, std::uint32_t zero, TUpdate&& update);
+
+template<typename TOperation>
+std::uint32_t EmitLdsAtomic32(SpirvEmitterState& state, const MemoryInfo& mem, TOperation&& operation) {
+    if (mem.kind != ResourceKind::Lds || !state.requirements.ldsLock) return operation();
+    return LockedLdsUpdate(state, TypeU32(state), ConstantU32(state, 0u), operation);
+}
+
 template<typename TOperation>
 std::uint32_t EmitAtomicAccess(SpirvValueEmitContext& ctx, const IrValue& inst, const MemoryInfo& mem, TOperation&& operation) {
     if (mem.kind == ResourceKind::Buffer) return EmitRuntimeBufferAtomic(ctx, inst, 32u, ActiveArgument(ctx, inst), operation);
@@ -649,7 +658,7 @@ std::uint32_t EmitAtomicAccess(SpirvValueEmitContext& ctx, const IrValue& inst, 
     return EmitValueOrZeroIfCondition(state, ActiveArgument(ctx, inst), [&]() {
         const auto access = PrepareMemoryElement(ctx, mem, DwordIndex(ctx, inst, mem));
         return EmitValueOrZeroIfCondition(state, EmitMemoryElementInBounds(state, access.resource, access.index), [&]() {
-            return operation(EmitMemoryElementPointer(state, access.resource, access.index));
+            return EmitLdsAtomic32(state, mem, [&]() { return operation(EmitMemoryElementPointer(state, access.resource, access.index)); });
         });
     });
 }
@@ -750,7 +759,7 @@ std::uint32_t Atomic32(SpirvValueEmitContext& ctx, const IrValue& inst, const Me
     if (mem.kind == ResourceKind::Buffer) return EmitRuntimeBufferAtomic(ctx, inst, 32u, active, apply);
     return EmitValueOrZeroIfCondition(state, active, [&] {
         const auto access = PrepareMemoryElement(ctx, mem, DwordIndex(ctx, inst, mem));
-        return EmitValueOrZeroIfCondition(state, EmitMemoryElementInBounds(state, access.resource, access.index), [&] { return apply(EmitMemoryElementPointer(state, access.resource, access.index)); });
+        return EmitValueOrZeroIfCondition(state, EmitMemoryElementInBounds(state, access.resource, access.index), [&] { return EmitLdsAtomic32(state, mem, [&] { return apply(EmitMemoryElementPointer(state, access.resource, access.index)); }); });
     });
 }
 
@@ -965,7 +974,8 @@ std::uint32_t ApertureAtomic32(SpirvValueEmitContext& ctx, const IrValue& inst, 
         return EmitValueOrZeroIfCondition(state, EmitMemoryElementInBounds(state, resource, index), [&] {
             const auto pointer = EmitMemoryElementPointer(state, resource, index);
             if (kind == ResourceKind::Lds) {
-                return AtomicUpdate(state, pointer, kind, [&](std::uint32_t current) { return FlatAtomicNext32(state, opcode, current, value, comparator); });
+                const auto update = [&]() { return AtomicUpdate(state, pointer, kind, [&](std::uint32_t current) { return FlatAtomicNext32(state, opcode, current, value, comparator); }); };
+                return state.requirements.ldsLock ? LockedLdsUpdate(state, TypeU32(state), ConstantU32(state, 0u), update) : update();
             }
             const auto old = state.module.AllocateId();
             state.module.AddFunction(spv::OpLoad, TypeU32(state), old, pointer);
@@ -1019,9 +1029,6 @@ std::uint32_t FlatAtomicNext64(SpirvEmitterState& state, IrOpcode opcode, std::u
     }
 }
 
-template<typename TUpdate>
-std::uint32_t LockedLdsUpdate(SpirvEmitterState& state, TUpdate&& update);
-
 std::uint32_t ApertureAtomic64(SpirvValueEmitContext& ctx, const IrValue& inst, ResourceKind kind, std::uint32_t address, std::uint32_t byteOffset, std::uint32_t value, std::uint32_t comparator) {
     auto& state = ctx.state;
     const auto instruction = ConstantU32(state, inst.Flags<MemoryFlags>().pc);
@@ -1056,7 +1063,7 @@ std::uint32_t ApertureAtomic64(SpirvValueEmitContext& ctx, const IrValue& inst, 
                 state.module.AddFunction(spv::OpStore, highPointer, nextHigh);
                 return old;
             };
-            return kind == ResourceKind::Lds ? LockedLdsUpdate(state, update) : update();
+            return kind == ResourceKind::Lds ? LockedLdsUpdate(state, TypeU64(state), ConstantU64(state, 0u), update) : update();
         });
     });
 }
@@ -1177,15 +1184,14 @@ std::uint32_t AppendConsume(SpirvValueEmitContext& ctx, const IrValue& inst, boo
 }
 
 template<typename TUpdate>
-std::uint32_t LockedLdsUpdate(SpirvEmitterState& state, TUpdate&& update) {
+std::uint32_t LockedLdsUpdate(SpirvEmitterState& state, std::uint32_t type, std::uint32_t zero, TUpdate&& update) {
     const auto lock = EmitLdsLockPointer(state);
     const auto entry = state.currentLabel;
     const auto header = state.module.AllocateId();
     const auto body = state.module.AllocateId();
     const auto pending = state.module.AllocateId();
-    const auto spinHeader = state.module.AllocateId();
-    const auto spinBody = state.module.AllocateId();
-    const auto spinCont = state.module.AllocateId();
+    const auto attempt = state.module.AllocateId();
+    const auto attemptMerge = state.module.AllocateId();
     const auto critical = state.module.AllocateId();
     const auto servedMerge = state.module.AllocateId();
     const auto pendingMerge = state.module.AllocateId();
@@ -1198,7 +1204,7 @@ std::uint32_t LockedLdsUpdate(SpirvEmitterState& state, TUpdate&& update) {
     state.module.AddFunction(spv::OpBranch, header);
     EmitLabel(state, header);
     state.module.AddFunction(spv::OpPhi, TypeBool(state), done, ConstantBool(state, false), entry, doneNext, cont);
-    state.module.AddFunction(spv::OpPhi, TypeU64(state), result, ConstantU64(state, 0u), entry, resultNext, cont);
+    state.module.AddFunction(spv::OpPhi, type, result, zero, entry, resultNext, cont);
     state.module.AddFunction(spv::OpLoopMerge, merge, cont, spv::LoopControlMaskNone);
     state.module.AddFunction(spv::OpBranch, body);
     EmitLabel(state, body);
@@ -1208,31 +1214,33 @@ std::uint32_t LockedLdsUpdate(SpirvEmitterState& state, TUpdate&& update) {
     const auto elected = state.module.AllocateId();
     state.module.AddFunction(spv::OpGroupNonUniformElect, TypeBool(state), elected, ConstantU32(state, spv::ScopeSubgroup));
     state.module.AddFunction(spv::OpSelectionMerge, servedMerge, spv::SelectionControlMaskNone);
-    state.module.AddFunction(spv::OpBranchConditional, elected, spinHeader, servedMerge);
-    EmitLabel(state, spinHeader);
-    state.module.AddFunction(spv::OpLoopMerge, critical, spinCont, spv::LoopControlMaskNone);
-    state.module.AddFunction(spv::OpBranch, spinBody);
-    EmitLabel(state, spinBody);
+    state.module.AddFunction(spv::OpBranchConditional, elected, attempt, servedMerge);
+    EmitLabel(state, attempt);
     const auto previous = state.module.AllocateId();
     state.module.AddFunction(spv::OpAtomicCompareExchange, TypeU32(state), previous, lock, ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, spv::MemorySemanticsAcquireMask | LdsMemorySemantics(state)), ConstantU32(state, spv::MemorySemanticsMaskNone), ConstantU32(state, 1u), ConstantU32(state, 0u));
     const auto acquired = Binary(state, spv::OpIEqual, TypeBool(state), previous, ConstantU32(state, 0u));
-    state.module.AddFunction(spv::OpBranchConditional, acquired, critical, spinCont);
-    EmitLabel(state, spinCont);
-    state.module.AddFunction(spv::OpBranch, spinHeader);
+    state.module.AddFunction(spv::OpSelectionMerge, attemptMerge, spv::SelectionControlMaskNone);
+    state.module.AddFunction(spv::OpBranchConditional, acquired, critical, attemptMerge);
     EmitLabel(state, critical);
     const auto old = update();
     state.module.AddFunction(spv::OpAtomicStore, lock, ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, spv::MemorySemanticsReleaseMask | LdsMemorySemantics(state)), ConstantU32(state, 0u));
     const auto criticalExit = state.currentLabel;
+    state.module.AddFunction(spv::OpBranch, attemptMerge);
+    EmitLabel(state, attemptMerge);
+    const auto attempted = state.module.AllocateId();
+    const auto attemptedResult = state.module.AllocateId();
+    state.module.AddFunction(spv::OpPhi, TypeBool(state), attempted, ConstantBool(state, true), criticalExit, ConstantBool(state, false), attempt);
+    state.module.AddFunction(spv::OpPhi, type, attemptedResult, old, criticalExit, result, attempt);
     state.module.AddFunction(spv::OpBranch, servedMerge);
     EmitLabel(state, servedMerge);
     const auto served = state.module.AllocateId();
     const auto servedResult = state.module.AllocateId();
-    state.module.AddFunction(spv::OpPhi, TypeBool(state), served, ConstantBool(state, true), criticalExit, ConstantBool(state, false), pending);
-    state.module.AddFunction(spv::OpPhi, TypeU64(state), servedResult, old, criticalExit, result, pending);
+    state.module.AddFunction(spv::OpPhi, TypeBool(state), served, attempted, attemptMerge, ConstantBool(state, false), pending);
+    state.module.AddFunction(spv::OpPhi, type, servedResult, attemptedResult, attemptMerge, result, pending);
     state.module.AddFunction(spv::OpBranch, pendingMerge);
     EmitLabel(state, pendingMerge);
     state.module.AddFunction(spv::OpPhi, TypeBool(state), doneNext, served, servedMerge, done, body);
-    state.module.AddFunction(spv::OpPhi, TypeU64(state), resultNext, servedResult, servedMerge, result, body);
+    state.module.AddFunction(spv::OpPhi, type, resultNext, servedResult, servedMerge, result, body);
     const auto ballot = state.module.AllocateId();
     state.module.AddFunction(spv::OpGroupNonUniformBallot, TypeU32Vector(state, 4u), ballot, ConstantU32(state, spv::ScopeSubgroup), Unary(state, spv::OpLogicalNot, TypeBool(state), doneNext));
     std::uint32_t remaining = ConstantU32(state, 0u);
@@ -1276,7 +1284,7 @@ std::uint32_t SharedAtomic64(SpirvValueEmitContext& ctx, const IrValue& inst, TR
                 state.module.AddFunction(spv::OpStore, highPointer, nextHigh);
                 return old;
             };
-            return state.requirements.ldsLock ? LockedLdsUpdate(state, update) : update();
+            return state.requirements.ldsLock ? LockedLdsUpdate(state, TypeU64(state), ConstantU64(state, 0u), update) : update();
         });
     });
 }
