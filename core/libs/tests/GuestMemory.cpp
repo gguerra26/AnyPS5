@@ -1867,6 +1867,7 @@ int main() {
 #ifdef _WIN32
     _putenv_s("APS5_PIN_WAIT_MS", "1000");
 #endif
+    const bool arena = GuestArena::GuestArenaAvailable_nid_postfix();
     CheckAvailableDirectMemoryIsLargestFreeBlock();
     CheckVirtualQuerySplitFlexibleRanges();
     CheckVirtualQueryForNonReadableGuestRange();
@@ -1902,22 +1903,22 @@ int main() {
     CheckMtypeprotect();
     CheckHeapAlignment();
     CheckHeapAfterMappingReuse();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckNoOverwriteRejectsHostOccupiedMapping();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckFixedMappingsReachTheApplicationAreaEnd();
+    if (arena) CheckNoOverwriteRejectsHostOccupiedMapping();
+    if (arena) CheckFixedMappingsReachTheApplicationAreaEnd();
 #ifdef _WIN32
     CheckGuestModuleImageProtection();
 #endif
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckUnhintedKernelMappingsLandInTheWindow();
+    if (arena) CheckUnhintedKernelMappingsLandInTheWindow();
 #if defined(__linux__)
     CheckUnmappedArenaRangeStaysReserved();
 #endif
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckArenaPlacesUnhintedMappingsInsideTheWindow();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckArenaReusesAFreedRange();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckArenaHonoursHintsWithoutGoingBelowThem();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckSharedWriteTracking();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckReadsIntoSharedWriteTracking();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckPinnedSharedPages();
-    if (GuestArena::GuestArenaAvailable_nid_postfix()) CheckFailedCollectKeepsWrites();
+    if (arena) CheckArenaPlacesUnhintedMappingsInsideTheWindow();
+    if (arena) CheckArenaReusesAFreedRange();
+    if (arena) CheckArenaHonoursHintsWithoutGoingBelowThem();
+    if (arena) CheckSharedWriteTracking();
+    if (arena) CheckReadsIntoSharedWriteTracking();
+    if (arena) CheckPinnedSharedPages();
+    if (arena) CheckFailedCollectKeepsWrites();
 #if defined(__linux__)
     CheckWriteWatch();
     CheckWriteWatchArmedCollect();

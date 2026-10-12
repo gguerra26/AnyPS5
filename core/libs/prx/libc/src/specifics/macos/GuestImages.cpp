@@ -25,14 +25,19 @@ void OnImageRemoved(const mach_header*, intptr_t) {
     imagesRemoved.fetch_add(1, std::memory_order_relaxed);
 }
 
-__attribute__((constructor)) void TrackImages() {
-    _dyld_register_func_for_add_image(OnImageAdded);
-    _dyld_register_func_for_remove_image(OnImageRemoved);
+void TrackImages() {
+    static const bool tracked = [] {
+        _dyld_register_func_for_add_image(OnImageAdded);
+        _dyld_register_func_for_remove_image(OnImageRemoved);
+        return true;
+    }();
+    static_cast<void>(tracked);
 }
 
 }
 
 extern "C" int dl_iterate_phdr(int (*callback)(dl_phdr_info*, std::size_t, void*), void* data) {
+    TrackImages();
     for (std::uint32_t index = 0; index < _dyld_image_count(); ++index) {
         const auto* header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(index));
         if (header == nullptr || header->magic != MH_MAGIC_64 || (header->flags & MH_DYLIB_IN_CACHE) != 0) continue;
