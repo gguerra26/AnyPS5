@@ -88,18 +88,17 @@ extern "C" {
 FileStream* APS5_VABI fdopen_nid_postfix(int descriptor, const char* mode) {
     if (descriptor < 0) { errno = 9; return nullptr; }
     if (!mode) { errno = 22; return nullptr; }
-    const char* supported[] = {"r", "w", "a", "rb", "wb", "ab", "r+", "w+", "a+",
-        "rb+", "wb+", "ab+", "r+b", "w+b", "a+b"};
-    bool valid = false;
-    for (const auto* candidate : supported) if (std::strcmp(mode, candidate) == 0) valid = true;
-    if (!valid) { errno = 22; return nullptr; }
+    const auto parsed = ParseFileMode(mode);
+    if (!parsed) { errno = 22; return nullptr; }
     try {
+        auto nativeMode = parsed->native;
+        std::erase(nativeMode, 'x');
         const auto release = [](void* pointer) { ::operator delete(pointer); };
         std::unique_ptr<void, decltype(release)> storage(::operator new(sizeof(FileStream)), release);
 #ifdef _WIN32
-        auto* native = ::_fdopen(descriptor, mode);
+        auto* native = ::_fdopen(descriptor, nativeMode.c_str());
 #else
-        auto* native = ::fdopen(descriptor, mode);
+        auto* native = ::fdopen(descriptor, nativeMode.c_str());
 #endif
         if (!native) return nullptr;
         auto* stream = new (storage.get()) FileStream(native, true);
@@ -186,8 +185,7 @@ int APS5_VABI fopen_s_nid_postfix(FileStream** result, const char* filename, con
 int APS5_VABI fclose_nid_postfix(FileStream* stream) {
     GetNativeStream(stream);
     std::unique_ptr<FileStream> owner(stream->IsDynamic() ? stream : nullptr);
-    stream->Close();
-    return 0;
+    return stream->Close();
 }
 
 int APS5_VABI fseek_nid_postfix(FileStream* stream, std::int64_t offset, int origin);
