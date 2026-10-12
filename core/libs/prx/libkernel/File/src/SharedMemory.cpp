@@ -110,7 +110,7 @@ int GuestError(int error) {
     }
 }
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__)
 int NamedGuestError(int error) {
     switch (error) {
     case ENOENT:
@@ -465,7 +465,7 @@ extern "C" int APS5_VABI shm_open_nid_postfix(const char* path, int flags, int m
     if (accessMode != SCE_KERNEL_O_RDONLY && accessMode != SCE_KERNEL_O_RDWR) return Fail(GuestInvalid);
     if ((flags & ~AcceptedFlags) != 0) return Fail(GuestInvalid);
     if (path != anonymousObject) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
         NotImplemented_nid_no_patch("shm_open of a named object");
 #else
         return OpenNamedFile(path, flags, mode);
@@ -480,7 +480,7 @@ extern "C" int APS5_VABI shm_open_nid_postfix(const char* path, int flags, int m
 }
 
 extern "C" int APS5_VABI shm_unlink_nid_postfix(const char* path) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     (void)path;
     NotImplemented_nid_no_patch("shm_unlink of a named object");
 #else
