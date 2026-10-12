@@ -428,7 +428,7 @@ int main() {
     std::filesystem::create_symlink("present.txt", link);
     Require(lstat_nid_postfix(link.string().c_str(), &linkStatus) == 0);
     Require((linkStatus.st_mode & 0170000) == 0120000 && linkStatus.st_size == 11);
-    Require(stat_nid_postfix(link.string().c_str(), &status) == 0 && (status.st_mode & 0170000) == 0100000);
+    Require(stat_nid_postfix(link.string().c_str(), &status) == 0 && (status.st_mode & 0170000) == 0100000 && status.st_size == 5);
     const auto dangling = root / "dangling";
     std::filesystem::create_symlink("missing.txt", dangling);
     Require(lstat_nid_postfix(dangling.string().c_str(), &linkStatus) == 0 && (linkStatus.st_mode & 0170000) == 0120000);
@@ -443,7 +443,7 @@ int main() {
     Require(unlink_nid_postfix(link.string().c_str()) == 0 && unlink_nid_postfix(dangling.string().c_str()) == 0);
 #else
     const auto fileLink = root / "file-link";
-    if (CreateSymbolicLinkW(fileLink.c_str(), present.c_str(), SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) == 0) {
+    if (CreateSymbolicLinkW(fileLink.c_str(), L"present.txt", SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) == 0) {
         Require(GetLastError() == ERROR_PRIVILEGE_NOT_HELD);
         std::fprintf(stderr, "Windows lstat link checks skipped: creating symbolic links needs Developer Mode or administrator rights\n");
     } else {
@@ -451,7 +451,7 @@ int main() {
         Require(std::filesystem::create_directory(targetDirectory));
         const auto directoryLink = root / "directory-link";
         const auto danglingLink = root / "dangling-link";
-        Require(CreateSymbolicLinkW(directoryLink.c_str(), targetDirectory.c_str(),
+        Require(CreateSymbolicLinkW(directoryLink.c_str(), L"target-directory",
             SYMBOLIC_LINK_FLAG_DIRECTORY | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0);
         Require(CreateSymbolicLinkW(danglingLink.c_str(), missing.c_str(), SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0);
         const auto checkUnsupportedLink = [](const std::filesystem::path& link) {
@@ -470,6 +470,7 @@ int main() {
             const bool statusUnchanged = std::all_of(bytes, bytes + sizeof(untouched), [](unsigned char value) { return value == 0x5a; });
             return rejected && errorUnchanged && statusUnchanged;
         };
+        Require(stat_nid_postfix(fileLink.string().c_str(), &status) == 0 && status.st_size == 5);
         Require(checkUnsupportedLink(fileLink));
         Require(checkUnsupportedLink(directoryLink));
         Require(checkUnsupportedLink(danglingLink));

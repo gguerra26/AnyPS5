@@ -391,6 +391,7 @@ struct FragmentParameter {
     bool flat;
     bool perVertex;
     bool custom = false;
+    bool flatP10 = false;
 };
 
 struct BarycentricEmulation {

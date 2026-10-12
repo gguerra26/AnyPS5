@@ -43,6 +43,13 @@ target_compile_features(nid_patcher PRIVATE cxx_std_20)
 
 if(MINGW)
     target_link_options(nid_patcher PRIVATE -static -static-libgcc -static-libstdc++)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS -fno-asynchronous-unwind-tables)
+    check_cxx_source_compiles("#ifdef __USING_SJLJ_EXCEPTIONS__\n#error\n#endif\nint main() { return 0; }" ANYPS5_MINGW_DWARF_EXCEPTIONS)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(NOT ANYPS5_MINGW_DWARF_EXCEPTIONS)
+        message(FATAL_ERROR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} selects SjLj exceptions with -fno-asynchronous-unwind-tables; the libraries need DWARF unwinding. Use the MinGW-w64 toolchain listed in docs/dev/BUILD.md.")
+    endif()
     add_compile_options(-fno-asynchronous-unwind-tables)
 endif()
 

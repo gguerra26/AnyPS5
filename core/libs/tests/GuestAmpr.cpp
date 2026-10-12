@@ -9,12 +9,16 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 extern "C" {
 int APS5_VABI sceAmprCommandBufferConstructor(Apr::CommandBufferObject*);
@@ -671,6 +675,31 @@ void TestMalformedCommandSizes() {
     Require(rejected);
 }
 
+void TestResolveSymbolicLink() {
+    const std::filesystem::path directory = "ampr_resolve_links";
+    std::filesystem::remove_all(directory);
+    Require(std::filesystem::create_directory(directory));
+    { std::ofstream file(directory / "target.bin", std::ios::binary); file << "linked data"; }
+    const auto link = directory / "link.bin";
+#ifdef _WIN32
+    if (CreateSymbolicLinkW(link.c_str(), L"target.bin", SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) == 0) {
+        Require(GetLastError() == ERROR_PRIVILEGE_NOT_HELD);
+        std::fprintf(stderr, "APR symbolic link check skipped: creating symbolic links needs Developer Mode or administrator rights\n");
+        std::filesystem::remove_all(directory);
+        return;
+    }
+#else
+    std::filesystem::create_symlink("target.bin", link);
+#endif
+    const std::string linkPath = link.generic_string();
+    const char* path = linkPath.c_str();
+    std::uint32_t id = 0;
+    std::uint64_t size = 0;
+    std::uint32_t failed = 0;
+    Require(sceKernelAprResolveFilepathsToIdsAndFileSizes(&path, 1, &id, &size, &failed) == 0 && size == 11);
+    std::filesystem::remove_all(directory);
+}
+
 void TestGatherScatter() {
     const char* path = "ampr_gather_scatter.bin";
     {
@@ -1230,6 +1259,7 @@ int main() {
     TestZeroFilledBuffer();
     TestResolveFailures();
     TestMalformedCommandSizes();
+    TestResolveSymbolicLink();
     TestGatherScatter();
     if (GuestArena::GuestArenaAvailable_nid_postfix()) {
         TestAmmRangesAboveHintedMaps();

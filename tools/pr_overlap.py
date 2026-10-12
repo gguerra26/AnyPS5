@@ -70,9 +70,18 @@ def commit(tree):
 
 def exports(diff):
     found = set()
-    for line in diff.splitlines():
+    lines = diff.splitlines()
+    for i, line in enumerate(lines):
         m = EXPORT.match(line)
-        if m and not m.group(1).endswith("_nid_no_patch") and not line.rstrip().endswith(";"):
+        if not m or m.group(1).endswith("_nid_no_patch"):
+            continue
+        text = line[1:]
+        for nxt in lines[i + 1:]:
+            if ";" in text or "{" in text or not nxt.startswith("+") or nxt.startswith("+++"):
+                break
+            text += nxt[1:]
+        semi, brace = text.find(";"), text.find("{")
+        if semi < 0 or 0 <= brace < semi:
             found.add(m.group(1))
     return found
 
