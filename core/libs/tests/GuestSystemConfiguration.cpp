@@ -179,6 +179,56 @@ static void CheckPseudoRandomSysctl() {
     }
     Require(threw);
 }
+static void CheckSdkVersionSysctl() {
+    *__error_nid_postfix() = 13;
+    std::size_t length = 0;
+    Require(sysctlbyname_nid_postfix("kern.sdk_version", nullptr, &length, nullptr, 0) == 0 && length == sizeof(std::uint32_t));
+    std::uint32_t version = 0;
+    length = sizeof(version);
+    Require(sysctlbyname_nid_postfix("kern.sdk_version", &version, &length, nullptr, 0) == 0 && version == 0x01000000 && length == sizeof(std::uint32_t));
+    Require(*__error_nid_postfix() == 13);
+    unsigned char bytes[4] = {0xaa, 0xaa, 0xaa, 0xaa};
+    length = 2;
+    Require(sysctlbyname_nid_postfix("kern.sdk_version", bytes, &length, nullptr, 0) == -1 && *__error_nid_postfix() == 12);
+    Require(length == 2 && bytes[2] == 0xaa && bytes[3] == 0xaa);
+    length = sizeof(version);
+    Require(sysctlbyname_nid_postfix("kern.sdk_version", &version, &length, &version, sizeof(version)) == -1 && *__error_nid_postfix() == 1);
+}
+static void CheckArandomSysctl() {
+    const int mib[] = {1, 37};
+    *__error_nid_postfix() = 13;
+    std::size_t length = 0;
+    Require(sysctl_nid_postfix(mib, 2, nullptr, &length, nullptr, 0) == 0 && length == 0);
+    length = 64;
+    Require(sysctl_nid_postfix(mib, 2, nullptr, &length, nullptr, 0) == 0 && length == 64);
+    length = 300;
+    Require(sysctl_nid_postfix(mib, 2, nullptr, &length, nullptr, 0) == 0 && length == 256);
+    Require(sysctl_nid_postfix(mib, 2, nullptr, nullptr, nullptr, 0) == 0);
+    Require(*__error_nid_postfix() == 13);
+    unsigned char first[64] = {};
+    unsigned char second[64] = {};
+    length = sizeof(first);
+    Require(sysctl_nid_postfix(mib, 2, first, &length, nullptr, 0) == 0 && length == sizeof(first));
+    length = sizeof(second);
+    Require(sysctl_nid_postfix(mib, 2, second, &length, nullptr, 0) == 0 && length == sizeof(second));
+    Require(std::memcmp(first, second, sizeof(first)) != 0);
+    Require(*__error_nid_postfix() == 13);
+    unsigned char named[64] = {};
+    length = sizeof(named);
+    Require(sysctlbyname_nid_postfix("kern.arandom", named, &length, nullptr, 0) == 0 && length == sizeof(named));
+    Require(*__error_nid_postfix() == 13);
+    length = sizeof(first);
+    Require(sysctl_nid_postfix(mib, 2, first, &length, first, sizeof(first)) == -1 && *__error_nid_postfix() == 1);
+    *__error_nid_postfix() = 13;
+    unsigned char big[300] = {};
+    length = sizeof(big);
+    Require(sysctl_nid_postfix(mib, 2, big, &length, nullptr, 0) == 0 && length == 256);
+    unsigned char small[16] = {};
+    length = sizeof(small);
+    Require(sysctl_nid_postfix(mib, 2, small, &length, nullptr, 0) == 0 && length == sizeof(small));
+    Require(sysctl_nid_postfix(mib, 2, first, nullptr, nullptr, 0) == 0);
+    Require(*__error_nid_postfix() == 13);
+}
 int main() {
     CheckProcessorCountSysctl();
     CheckPhysicalMemorySysctl();
@@ -186,6 +236,8 @@ int main() {
     CheckPathnameSysctl();
     CheckSystemSwVersion();
     CheckPseudoRandomSysctl();
+    CheckSdkVersionSysctl();
+    CheckArandomSysctl();
     *__error_nid_postfix() = 13;
     Require(sysconf_nid_postfix(47) == 0x4000);
     Require(getpagesize_nid_postfix() == sysconf_nid_postfix(47));

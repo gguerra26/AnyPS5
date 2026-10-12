@@ -9,7 +9,6 @@
 #include <mutex>
 #include <vector>
 #include <utility>
-#include <random>
 #include <string>
 #include <cinttypes>
 #ifdef _WIN32
@@ -20,6 +19,7 @@
 #include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libc/include/specifics/gcc/AtomicOps.hpp"
 #include "prx/libc/include/FileStream.hpp"
+#include "prx/libc/include/HostEntropy.hpp"
 
 namespace {
 
@@ -113,10 +113,9 @@ unsigned int APS5_VABI _Atomic_load_4_nid_postfix(volatile unsigned int* target,
 }
 
 unsigned int APS5_VABI _ZSt14_Random_devicev_nid_postfix() {
-    static std::random_device device;
-    static std::mutex mutex;
-    std::lock_guard lock(mutex);
-    return device();
+    unsigned int value = 0;
+    HostEntropy_nid_no_patch(&value, sizeof(value));
+    return value;
 }
 
 [[noreturn]] void APS5_VABI _ZSt14_Throw_C_errori_nid_postfix(int code) {
