@@ -160,18 +160,23 @@ struct VirtualQueryInfo {
     std::uint64_t offset;
     std::int32_t protection;
     std::int32_t memory_type;
-    std::uint32_t is_flexible : 1;
-    std::uint32_t is_direct : 1;
-    std::uint32_t is_stack : 1;
-    std::uint32_t is_pooled : 1;
-    std::uint32_t is_committed : 1;
-    std::uint32_t is_gpu_prt : 1;
-    std::uint32_t amm_usage : 1;
-    std::uint32_t reserved : 1;
+    std::uint8_t is_flexible : 1;
+    std::uint8_t is_direct : 1;
+    std::uint8_t is_stack : 1;
+    std::uint8_t is_pooled : 1;
+    std::uint8_t is_committed : 1;
+    std::uint8_t is_gpu_prt : 1;
+    std::uint8_t amm_usage : 1;
+    std::uint8_t reserved : 1;
     char name[32];
     std::uint8_t gpu_mask_id;
     std::uint8_t reserved2;
 };
+static_assert(sizeof(VirtualQueryInfo) == 72);
+static_assert(alignof(VirtualQueryInfo) == 8);
+static_assert(offsetof(VirtualQueryInfo, name) == 33);
+static_assert(offsetof(VirtualQueryInfo, gpu_mask_id) == 65);
+static_assert(offsetof(VirtualQueryInfo, reserved2) == 66);
 
 struct KernelSemaPrivate;
 struct KernelEventFlagPrivate;
@@ -279,6 +284,12 @@ struct ModuleInfoForUnwind {
     std::uint64_t seg0_addr;
     std::uint64_t seg0_size;
 };
+
+struct InternalSegmentInfo {
+    std::uint64_t address;
+    std::uint64_t size;
+};
+static_assert(sizeof(InternalSegmentInfo) == 0x10);
 
 struct MallocReplace {
     std::uint64_t size = sizeof(MallocReplace);
@@ -1175,7 +1186,7 @@ struct ImeEvent {
     ImeEventParam param;
 };
 
-using EventHandler = void (*)(void* arg, const ImeEvent* event);
+using EventHandler = void (APS5_VABI *)(void* arg, const ImeEvent* event);
 
 struct Param {
     std::int32_t user_id;
@@ -1258,6 +1269,13 @@ struct NetEpollEvent {
 struct NetCtlNatInfo { std::uint8_t opaque[128]; };
 
 union NetCtlInfo { std::uint8_t opaque[256]; };
+
+struct NetCtlIfStat {
+    std::uint32_t device;
+    std::uint64_t tx_bytes;
+    std::uint64_t rx_bytes;
+    std::uint32_t reserved[8];
+};
 
 using NetCtlCallback = void (*)(int, void*);
 
@@ -1454,7 +1472,13 @@ struct SaveDataSearchInfo {
     std::uint8_t reserved[32];
 };
 static_assert(sizeof(SaveDataSearchInfo) == 48);
-struct SaveDataMemoryData { void* buf; std::size_t buf_size; std::size_t offset; };
+struct SaveDataMemoryData {
+    void* buf;
+    std::size_t buf_size;
+    std::size_t offset;
+    std::uint8_t reserved[40];
+};
+static_assert(sizeof(SaveDataMemoryData) == 64);
 
 struct SaveDataMount3 {
     int user_id;
@@ -1617,6 +1641,35 @@ struct ContentExportCallbackParam {
 
 struct ContentSearchInitParam { std::size_t memory_size; };
 
+struct ContentSearchColumnValue {
+    std::uint32_t size;
+    std::int64_t value;
+};
+
+struct ContentSearchContentColumn {
+    std::int32_t column_type;
+    std::int32_t column_operator;
+    const ContentSearchColumnValue* value;
+    std::int32_t logical_connector;
+};
+
+struct ContentSearchContentColumnSet {
+    const ContentSearchContentColumn* columns;
+    std::int32_t columns_length;
+    std::int32_t logical_connector;
+};
+
+struct ContentSearchContentOrderByCondition {
+    std::int32_t column_type;
+    std::int32_t sort_type;
+};
+
+static_assert(sizeof(ContentSearchColumnValue) == 16);
+static_assert(sizeof(ContentSearchContentColumn) == 24);
+static_assert(offsetof(ContentSearchContentColumn, logical_connector) == 16);
+static_assert(sizeof(ContentSearchContentColumnSet) == 16);
+static_assert(sizeof(ContentSearchContentOrderByCondition) == 8);
+
 struct PngEncCreateParam {
     std::uint32_t this_size;
     std::uint32_t attribute;
@@ -1708,23 +1761,29 @@ struct JpegEncOutputInfo {
 };
 
 struct JpegDecCreateParam {
-    std::uint32_t size;
+    std::uint32_t this_size;
     std::uint32_t attribute;
+    std::uint32_t max_image_width;
 };
 
 struct JpegDecParseParam {
     const void* jpeg_mem_addr;
     std::uint32_t jpeg_mem_size;
-    std::uint32_t reserved0;
+    std::uint16_t decode_mode;
+    std::uint16_t down_scale;
 };
 
 struct JpegDecDecodeParam {
     const void* jpeg_mem_addr;
     void* image_mem_addr;
+    void* coefficient_mem_addr;
     std::uint32_t jpeg_mem_size;
     std::uint32_t image_mem_size;
+    std::uint32_t coefficient_mem_size;
+    std::uint16_t decode_mode;
+    std::uint16_t down_scale;
     std::uint16_t pixel_format;
-    std::uint16_t reserved0;
+    std::uint16_t alpha_value;
     std::uint32_t image_pitch;
 };
 
@@ -1732,8 +1791,13 @@ struct JpegDecImageInfo {
     std::uint32_t image_width;
     std::uint32_t image_height;
     std::uint16_t color_space;
-    std::uint16_t bit_depth;
-    std::uint32_t image_flag;
+    std::uint16_t component_number;
+    std::uint8_t component_id[4];
+    std::uint8_t sampling_factor[4];
+    std::uint32_t coefficient_mem_size;
+    std::uint32_t suitable_csc_attribute;
+    std::uint32_t output_image_width;
+    std::uint32_t output_image_height;
 };
 
 struct PlayGoInitParams {

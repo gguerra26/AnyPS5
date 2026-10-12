@@ -2,6 +2,7 @@
 #define CORE_SHADER_RECOMPILIER_TRANSLATION_INCLUDE_TRANSLATION_TRANSLATIONCONTEXT_HPP
 
 #include "Translation/InstructionTranslator.hpp"
+#include "Translation/RoundingMode.hpp"
 #include <array>
 #include <cstdint>
 #include <initializer_list>
@@ -16,10 +17,17 @@ public:
     void TranslateEmbeddedFetch(const RdnaInstruction& instruction, std::uint32_t attribute, std::uint32_t components);
     void TranslateInstruction(const RdnaInstruction& instruction);
     void SetPixelInput(const ShaderPixelInputInfo* info, bool barycentricEnabled) { pixelInput = info; fragmentShaderBarycentricEnabled = barycentricEnabled; }
-    void SetFloatMode(const std::optional<ShaderFloatMode>& mode) { floatMode = mode; ieeeMode = mode.has_value() && mode->ieeeMode; }
+    void SetFloatMode(const std::optional<ShaderFloatMode>& mode) {
+        declaredFloatMode = mode;
+        floatMode = mode;
+        ieeeMode = mode.has_value() && mode->ieeeMode;
+        rounding = RoundingState{static_cast<std::uint8_t>(mode.has_value() ? mode->floatMode & ModeRoundBits : 0u), 0u};
+    }
+    void SetEntryRounding(const RoundingState& state) { setRounding(state); }
     void SetNativeFloat16(bool enabled) { nativeFloat16 = enabled; }
     void AddBranchCondition(const BasicBlock& source, BlockInfo& info);
     void TranslateCodeTableLoad(const RdnaInstruction& instruction, const ControlFlowGraph::CodeTableLoad& table);
+    void TranslateUnlinkedCall(const RdnaInstruction& instruction);
 
 private:
     struct AddressOperands {
@@ -92,6 +100,7 @@ private:
     IrU32 conditionBit(const RdnaOperand& operand);
     IrU1 readMask(const RdnaOperand& operand);
     IrU1 readMaskValid(const RdnaOperand& operand);
+    static bool maskLanesExact(const RdnaOperand& operand);
     std::array<IrU32, 2> writeMask(const RdnaOperand& operand, IrU1 value, bool write64 = false);
     void writeCompareResult(const RdnaOperand& operand, IrU1 value);
     MemoryFlags addMemoryInfo(const MemoryInfo& memory, std::uint32_t pc);
@@ -144,6 +153,7 @@ private:
     bool dsAtomic64(const RdnaInstruction& inst, IrOpcode opcode, bool returnsValue);
     bool dsCondxchg32(const RdnaInstruction& inst);
     bool dsAppendConsume(const RdnaInstruction& inst, IrOpcode opcode);
+    bool dsOrderedCount(const RdnaInstruction& inst);
     bool dsAddtid(const RdnaInstruction& inst, bool write);
     bool globalAddtid(const RdnaInstruction& inst, bool write);
     bool dsSwizzleB32(const RdnaInstruction& inst);
@@ -250,6 +260,8 @@ private:
     bool packedInteger16MinMax(const RdnaInstruction& inst, IrOpcode opcode, bool sign);
     bool sU64Mask(const RdnaInstruction& inst, IrOpcode logicalOpcode, IrOpcode bitOpcode, bool negateRhs, bool negateResult, bool unary);
     IrU1 u64MaskBinary(const RdnaInstruction& inst, IrOpcode opcode, bool negateRhs, bool negateResult);
+    template <typename TWord>
+    bool sU32Mask(const RdnaInstruction& inst, IrOpcode logicalOpcode, bool binary, bool negateRhs, bool negateResult, TWord&& word);
     bool simpleInteger(const RdnaInstruction& inst, IrOpcode opcode, IrType type, bool reverse, bool maskShiftCount, bool updateScc);
     bool composedIntegerBinary(const RdnaInstruction& inst, IrOpcode opcode, bool negateRhs, bool negateResult, bool updateScc);
     bool vAndOrB32(const RdnaInstruction& inst);
@@ -340,6 +352,9 @@ private:
     void vInterpP2F16(const RdnaInstruction& inst);
     void eXP(const RdnaInstruction& inst);
     bool emitScalar(const RdnaInstruction& inst);
+    void setRounding(const RoundingState& state);
+    void writeRounding(const RdnaInstruction& inst);
+    void checkRoundingUse(const RdnaInstruction& inst) const;
     bool emitVector(const RdnaInstruction& inst);
     std::uint32_t f32DenormalFlushFor(const RdnaInstruction& inst) const;
     bool emitInterpolation(const RdnaInstruction& inst);
@@ -349,6 +364,8 @@ private:
     const ShaderPixelInputInfo* pixelInput = nullptr;
     bool fragmentShaderBarycentricEnabled = false;
     std::optional<ShaderFloatMode> floatMode;
+    std::optional<ShaderFloatMode> declaredFloatMode;
+    RoundingState rounding;
     bool ieeeMode = false;
     bool nativeFloat16 = false;
     IrBuilder ir;

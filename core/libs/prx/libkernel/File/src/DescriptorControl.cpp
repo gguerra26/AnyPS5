@@ -3,12 +3,14 @@
 #include "prx/libkernel/File/include/File.hpp"
 #include "prx/libkernel/File/include/RandomDevice.hpp"
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libc/include/FileLock.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 
 #include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -19,7 +21,7 @@
 #ifdef _WIN32
 #include <io.h>
 #include <windows.h>
-#include <winternl.h>
+#include "prx/libc/include/WindowsDescriptor.hpp"
 #else
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -29,9 +31,6 @@
 
 extern "C" int* APS5_VABI __error_nid_postfix();
 extern "C" int APS5_VABI dup2_nid_postfix(int from, int to);
-#ifdef _WIN32
-extern "C" _invalid_parameter_handler _set_thread_local_invalid_parameter_handler(_invalid_parameter_handler);
-#endif
 
 namespace {
 
@@ -83,8 +82,12 @@ constexpr int SettableStatusFlags = OpenStatusFlags | ReadAheadFlag;
 constexpr std::int16_t ReadLock = 1;
 constexpr std::int16_t Unlock = 2;
 constexpr std::int16_t WriteLock = 3;
+constexpr std::int16_t FromStart = 0;
 constexpr std::int16_t FromCurrent = 1;
+constexpr std::int16_t FromEnd = 2;
 
+constexpr std::uint32_t CloseOnExecRequest = 0x20006601;
+constexpr std::uint32_t KeepOnExecRequest = 0x20006602;
 constexpr std::uint32_t NonblockingRequest = 0x8004667e;
 constexpr std::uint32_t ReadableRequest = 0x4004667f;
 constexpr std::uint32_t RequestIn = 0x80000000u;
@@ -133,20 +136,11 @@ const char* KindName(Kind kind) {
 }
 
 #ifdef _WIN32
-void IgnoreInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, std::uintptr_t) {}
-
-HANDLE NativeHandle(int fd) {
-    const auto previous = _set_thread_local_invalid_parameter_handler(IgnoreInvalidParameter);
-    const auto handle = ::_get_osfhandle(fd);
-    _set_thread_local_invalid_parameter_handler(previous);
-    return reinterpret_cast<HANDLE>(handle);
-}
-
 std::optional<Kind> Classify(int fd, const char* function) {
     if (fd < 0 || !DescriptorIsOpen_nid_no_patch(fd)) return std::nullopt;
     if (File::DirectoryDescriptorPath(fd)) return Kind::Directory;
     if (File::IsRandomDevice(fd)) return Kind::RandomDevice;
-    switch (::GetFileType(NativeHandle(fd))) {
+    switch (::GetFileType(WindowsDescriptorHandle_nid_no_patch(fd))) {
         case FILE_TYPE_DISK: return Kind::File;
         case FILE_TYPE_PIPE: return Kind::Pipe;
         case FILE_TYPE_CHAR: return Kind::Device;
@@ -155,36 +149,25 @@ std::optional<Kind> Classify(int fd, const char* function) {
 }
 
 int AccessMode(int fd, const char* function) {
-    using QueryObject = NTSTATUS(NTAPI*)(HANDLE, OBJECT_INFORMATION_CLASS, PVOID, ULONG, PULONG);
-    static const auto query = reinterpret_cast<QueryObject>(reinterpret_cast<void*>(::GetProcAddress(::GetModuleHandleW(L"ntdll.dll"), "NtQueryObject")));
-    PUBLIC_OBJECT_BASIC_INFORMATION information{};
-    const NTSTATUS status = query == nullptr ? -1 : query(NativeHandle(fd), ObjectBasicInformation, &information, sizeof(information), nullptr);
-    if (status < 0)
-        throw std::runtime_error(std::string(function) + ": cannot read the access of descriptor " + std::to_string(fd) + ", status=" + std::to_string(status));
-    const bool read = (information.GrantedAccess & FILE_READ_DATA) != 0;
-    const bool write = (information.GrantedAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA)) != 0;
-    if (read && write) return ReadWrite;
-    if (write) return WriteOnly;
-    if (read) return ReadOnly;
-    throw std::runtime_error(std::string(function) + ": descriptor " + std::to_string(fd) + " grants neither read nor write access");
+    return WindowsDescriptorAccess_nid_no_patch(WindowsDescriptorHandle_nid_no_patch(fd), fd, function);
 }
 
 DWORD PipeState(int fd, const char* function) {
     DWORD state = 0;
-    if (!::GetNamedPipeHandleStateW(NativeHandle(fd), &state, nullptr, nullptr, nullptr, nullptr, 0))
+    if (!::GetNamedPipeHandleStateW(WindowsDescriptorHandle_nid_no_patch(fd), &state, nullptr, nullptr, nullptr, nullptr, 0))
         throw std::runtime_error(std::string(function) + ": cannot read the mode of pipe descriptor " + std::to_string(fd) + ", error=" + std::to_string(::GetLastError()));
     return state;
 }
 
 void SetPipeNonblocking(int fd, bool nonblocking, const char* function) {
     DWORD mode = (PipeState(fd, function) & PIPE_READMODE_MESSAGE) | (nonblocking ? PIPE_NOWAIT : PIPE_WAIT);
-    if (!::SetNamedPipeHandleState(NativeHandle(fd), &mode, nullptr, nullptr))
+    if (!::SetNamedPipeHandleState(WindowsDescriptorHandle_nid_no_patch(fd), &mode, nullptr, nullptr))
         throw std::runtime_error(std::string(function) + ": cannot change the mode of pipe descriptor " + std::to_string(fd) + ", error=" + std::to_string(::GetLastError()));
 }
 
 Entry InitialEntry(int fd) {
     int status = 0;
-    if (::GetFileType(NativeHandle(fd)) == FILE_TYPE_PIPE && (PipeState(fd, "fcntl") & PIPE_NOWAIT) != 0) status |= Nonblocking;
+    if (::GetFileType(WindowsDescriptorHandle_nid_no_patch(fd)) == FILE_TYPE_PIPE && (PipeState(fd, "fcntl") & PIPE_NOWAIT) != 0) status |= Nonblocking;
     return {false, std::make_shared<int>(status)};
 }
 
@@ -204,12 +187,68 @@ int Readable(int fd, Kind kind, const char* function) {
     }
     if (AccessMode(fd, function) == WriteOnly) return 0;
     DWORD available = 0;
-    if (!::PeekNamedPipe(NativeHandle(fd), nullptr, 0, nullptr, &available, nullptr)) {
+    if (!::PeekNamedPipe(WindowsDescriptorHandle_nid_no_patch(fd), nullptr, 0, nullptr, &available, nullptr)) {
         const DWORD error = ::GetLastError();
         if (error == ERROR_BROKEN_PIPE) return 0;
         throw std::runtime_error(std::string(function) + ": cannot peek pipe descriptor " + std::to_string(fd) + ", error=" + std::to_string(error));
     }
     return static_cast<int>(available);
+}
+
+std::int64_t LockOffset(int fd, Kind kind) {
+    if (kind == Kind::Directory) {
+        const auto cursor = File::SeekDirectoryDescriptor(fd, 0, FromCurrent);
+        if (!cursor) throw std::runtime_error("fcntl: cannot read the offset of directory descriptor " + std::to_string(fd));
+        return *cursor;
+    }
+    const auto offset = ::_telli64(fd);
+    if (offset < 0) throw std::runtime_error("fcntl: cannot read the offset of descriptor " + std::to_string(fd) + ", errno=" + std::to_string(errno));
+    return offset;
+}
+
+std::int64_t LockFileSize(int fd, Kind kind) {
+    if (kind == Kind::Directory) Unsupported("fcntl", "a record lock from the end", kind, fd);
+    const auto size = ::_filelengthi64(fd);
+    if (size < 0) throw std::runtime_error("fcntl: cannot read the size of descriptor " + std::to_string(fd) + ", errno=" + std::to_string(errno));
+    return size;
+}
+
+int LockRangeError(int fd, Kind kind, const GuestLock& lock) {
+    constexpr auto Largest = std::numeric_limits<std::int64_t>::max();
+    std::int64_t start = lock.start;
+    if (lock.whence == FromEnd) {
+        const auto size = LockFileSize(fd, kind);
+        if (lock.start > 0 && size > Largest - lock.start) return GuestEoverflow;
+        start = size + lock.start;
+    } else if (lock.whence != FromStart && lock.whence != FromCurrent) {
+        return GuestEinval;
+    }
+    if (start < 0) return GuestEinval;
+    if (lock.length < 0 && (start == 0 || start + lock.length < 0)) return GuestEinval;
+    if (lock.length > 0 && lock.length - 1 > Largest - start) return GuestEoverflow;
+    return 0;
+}
+
+int ProcessRecordLock(int fd, Kind kind, int command, GuestLock& lock, void* pointer, std::size_t size) {
+    const bool known = lock.type == ReadLock || lock.type == WriteLock || lock.type == Unlock;
+    if (command == GetLock && !known) return Fail(GuestEinval);
+    if (lock.whence == FromCurrent) {
+        const auto offset = LockOffset(fd, kind);
+        if (lock.start > 0 && offset > std::numeric_limits<std::int64_t>::max() - lock.start) return Fail(GuestEoverflow);
+        lock.start += offset;
+    }
+    if (command != GetLock) {
+        if (!known) return Fail(GuestEinval);
+        const int access = lock.type == Unlock ? ReadWrite : AccessMode(fd, "fcntl");
+        if ((lock.type == ReadLock && access == WriteOnly) || (lock.type == WriteLock && access == ReadOnly)) return Fail(GuestEbadf);
+    }
+    if (const int error = LockRangeError(fd, kind, lock); error != 0) return Fail(error);
+    if (command != GetLock) return 0;
+    lock.type = Unlock;
+    const GuestArena::HostWrite destination(pointer, size);
+    if (!destination.Open()) return Fail(GuestEfault);
+    std::memcpy(pointer, &lock, size);
+    return 0;
 }
 #else
 std::optional<Kind> Classify(int fd, const char* function) {
@@ -330,8 +369,7 @@ int RecordLock(int fd, int command, std::intptr_t argument) {
     if (!kind || *kind == Kind::Pipe) return Fail(GuestEbadf);
     if (*kind != Kind::File && *kind != Kind::Directory) Unsupported("fcntl", "a record lock", *kind, fd);
 #ifdef _WIN32
-    static_cast<void>(current);
-    throw std::runtime_error("fcntl: record locks are not implemented on Windows, command=" + std::to_string(command) + ", fd=" + std::to_string(fd));
+    return ProcessRecordLock(fd, *kind, current, lock, pointer, size);
 #else
     struct flock host{};
     if (lock.type == ReadLock) host.l_type = F_RDLCK;
@@ -473,6 +511,10 @@ int Ioctl(int fd, std::uint64_t request, void* argument) {
     if ((command & RequestIn) && length != 0 && argument == nullptr) return Fail(GuestEfault);
     const auto kind = Classify(fd, "ioctl");
     if (!kind) return Fail(GuestEbadf);
+    if (command == CloseOnExecRequest || command == KeepOnExecRequest) {
+        SetCloseOnExec(fd, command == CloseOnExecRequest);
+        return 0;
+    }
     if (command == NonblockingRequest) {
         const bool enable = *static_cast<const int*>(argument) != 0;
         return ChangeStatus(fd, *kind, Nonblocking, enable ? Nonblocking : 0, "ioctl");
@@ -496,12 +538,19 @@ int Ioctl(int fd, std::uint64_t request, void* argument) {
 void RememberDescriptor(int fd, int openFlags) {
     std::lock_guard lock(g_mutex);
     g_entries[fd] = Entry{(openFlags & OpenCloseOnExec) != 0, std::make_shared<int>(openFlags & OpenStatusFlags)};
+#ifdef _WIN32
+    GuestFileLockForget_nid_no_patch(fd);
+#endif
 }
 
 void ShareDescriptor(int from, int to) {
     std::lock_guard lock(g_mutex);
     auto status = Materialize(from).status;
     g_entries[to] = Entry{false, std::move(status)};
+#ifdef _WIN32
+    File::SharePositionedTransfer(from, to);
+    GuestFileLockShare_nid_no_patch(from, to);
+#endif
 }
 
 void ForgetDescriptor(int fd) {

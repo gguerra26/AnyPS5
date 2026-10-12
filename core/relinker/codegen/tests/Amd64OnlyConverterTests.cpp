@@ -886,6 +886,43 @@ void converterWideStoreWindows() {
     requireFailure([&] { (void)convert(withStore(far, tail)); }, "A 256-bit store whose movable neighbours are all beyond a short jump was kept");
 }
 
+void converterJumpTableTargets() {
+    const auto converter = Codegen::MakeAmd64OnlyConverter(Codegen::Amd64OnlyTarget::Rosetta);
+    const Bytes leaTable = {0x48, 0x8D, 0x0D, 0xF9, 0x1F, 0x00, 0x00};
+    const Bytes dispatch = {0x48, 0x63, 0x04, 0x81, 0x48, 0x01, 0xC8, 0xFF, 0xE0, 0x48, 0x83, 0xC1, 0x01, 0xC5, 0xFC, 0x11, 0x07, 0x48, 0x83, 0xC2, 0x01, 0xC3};
+    const Bytes store = {0xC5, 0xFC, 0x11, 0x07};
+    const Domain::ProgramHeader code{1, 5, 0x200, 0x1000, 0, 29, 29, 16};
+    const Domain::ProgramHeader data{1, 4, 0x300, 0x3000, 0, 0x40, 0x40, 16};
+    const auto table = [](const std::uint64_t base, const std::vector<std::uint64_t>& targets) {
+        Bytes bytes;
+        for (const auto target : targets) {
+            const auto relative = static_cast<std::uint32_t>(target - base);
+            for (std::size_t byte = 0; byte < 4; ++byte)
+                bytes.push_back(static_cast<std::uint8_t>(relative >> (byte * 8)));
+        }
+        return bytes;
+    };
+    const auto convert = [&](const Bytes& first, const std::vector<std::pair<std::size_t, Bytes>>& placed, const std::vector<Domain::ProgramHeader>& headers) {
+        Bytes file(0x400, 0xCC);
+        std::copy(first.begin(), first.end(), file.begin() + 0x200);
+        std::copy(dispatch.begin(), dispatch.end(), file.begin() + 0x207);
+        for (const auto& [offset, bytes] : placed)
+            std::copy(bytes.begin(), bytes.end(), file.begin() + static_cast<std::ptrdiff_t>(offset));
+        return converter->Convert(file, headers);
+    };
+    const auto placedAt = [](const Codegen::ConvertResult& result, const Domain::FileByteOffset offset) {
+        return result.Trampolines.size() == 1 && result.Trampolines[0].Offset == offset && result.Trampolines[0].Length == 8;
+    };
+
+    require(placedAt(convert(leaTable, {{0x300, table(0x3000, {0x1010, 0x1018})}, {0x330, store}}, {code, data}), 0x210), "A 256-bit store moved the instruction after it although a jump table enters that instruction");
+    require(placedAt(convert(leaTable, {{0x300, table(0x3000, {0x1010, 0x1019, 0x1018})}}, {code, data}), 0x214), "A jump table was read past an entry that does not start an instruction");
+    require(placedAt(convert({0x48, 0x8B, 0x0D, 0xF9, 0x1F, 0x00, 0x00}, {{0x300, table(0x3000, {0x1010, 0x1018})}}, {code, data}), 0x214), "A jump table was read at an address loaded rather than formed by LEA");
+    require(placedAt(convert({0x48, 0x8D, 0x0D, 0xF7, 0x1F, 0x00, 0x00}, {{0x2FE, table(0x2FFE, {0x1018})}}, {code, data}), 0x214), "A jump table was read at an address outside every segment");
+    require(placedAt(convert(leaTable, {{0x300, table(0x3000, {0x1010})}, {0x380, table(0x3000, {0x1018})}}, {code, data, {0x61000000, 4, 0x380, 0x3000, 0, 0x10, 0x10, 16}}), 0x214), "A jump table was read from a segment that is not loaded");
+    require(placedAt(convert(leaTable, {{0x300, table(0x3000, {0x1010, 0x1018})}, {0x3A0, store}}, {code, data, {2, 5, 0x3A0, 0x2000, 0, 4, 4, 16}}), 0x210), "A segment that is not loaded was converted");
+    requireFailure([&] { (void)convert(leaTable, {{0x300, table(0x3000, {0x1010, 0x1018})}}, {code, {1, 4, 0x300, 0x3000, 0, 0x1000, 0x1000, 16}}); }, "A jump table was read from a segment that exceeds the file");
+}
+
 void converterRosetta() {
     const auto converter = Codegen::MakeAmd64OnlyConverter(Codegen::Amd64OnlyTarget::Rosetta);
     Bytes file(0x300, 0xCC);
@@ -913,6 +950,61 @@ void converterRosetta() {
     require(kept.KeptCount == 1 && kept.Trampolines.empty() && kept.ReplacedCount == 2, "RDPID without room for a jump was not kept");
     const auto intel = Codegen::MakeAmd64OnlyConverter()->Convert(file, {segmentHeader(text.size())});
     require(intel.Reports.empty() && intel.Bytes == file, "The Intel target converted RDSEED, RDPID or CLWB");
+}
+
+void rosettaScalarCompares() {
+    const auto rosetta = Codegen::MakeAmd64OnlyInstructionMatcher(Codegen::Amd64OnlyTarget::Rosetta);
+    const auto match = [&](const Bytes& bytes) { return rosetta->Match(bytes.data(), bytes.size()); };
+    const Bytes compare = {0xC5, 0xEA, 0xC2, 0xCA, 0x03};
+    const auto lowered = match(compare);
+    require(lowered && lowered->Lowering == Codegen::Amd64OnlyLowering::Trampoline && lowered->Optional && !lowered->RelocatableWindow && lowered->InstructionName == "scalar compare", "A Rosetta-hazard scalar compare was not lowered through an optional stub");
+    require(lowered->ReturnBranchOffset == 5 && lowered->StubBody.size() == 10 && Bytes(lowered->StubBody.begin(), lowered->StubBody.begin() + 5) == compare && lowered->StubBody[5] == 0xE9 && lowered->Relocations.empty(), "The scalar compare stub does not run the compare unchanged before its return jump");
+    const auto unaligned = match(Bytes{0xC5, 0xEA, 0xC2, 0x47, 0x68, 0x03});
+    require(unaligned && Bytes(unaligned->StubBody.begin(), unaligned->StubBody.begin() + 6) == Bytes{0xC5, 0xEA, 0xC2, 0x47, 0x68, 0x03} && unaligned->Relocations.empty(), "A memory-form scalar compare does not move unchanged");
+    const Bytes rip = {0xC5, 0xEA, 0xC2, 0x0D, 0x00, 0x01, 0x00, 0x00, 0x03};
+    const auto ripLowered = match(rip);
+    require(ripLowered && ripLowered->Relocations.size() == 1 && ripLowered->Relocations[0].DisplacementOffset == 4 && ripLowered->Relocations[0].InstructionEnd == 9 && ripLowered->Relocations[0].SiteTarget == 9 + 0x100, "A RIP-relative scalar compare was not relocated from its place in the site");
+    require(Bytes(ripLowered->StubBody.begin() + 4, ripLowered->StubBody.begin() + 8) == Bytes(4, 0), "The RIP-relative scalar compare keeps its displacement in the stub");
+    const auto vex3 = match(Bytes{0xC4, 0xE1, 0xEB, 0xC2, 0xCB, 0x03});
+    require(vex3 && Bytes(vex3->StubBody.begin(), vex3->StubBody.begin() + 6) == Bytes{0xC4, 0xE1, 0xEB, 0xC2, 0xCB, 0x03}, "A VEX3 VCMPSD with a hazard predicate does not move unchanged");
+    for (const Bytes& kept : {Bytes{0xC5, 0xEA, 0xC2, 0xCA, 0x00}, Bytes{0xC5, 0xEA, 0xC2, 0xCA, 0x01}, Bytes{0xC5, 0xEA, 0xC2, 0xCA, 0x02}, Bytes{0xC4, 0xE1, 0xEB, 0xC2, 0xCB, 0x01}})
+        require(!match(kept).has_value(), "An EQ_OQ, LT_OS or LE_OS scalar compare must stay inline");
+    for (const Bytes& other : {Bytes{0xC5, 0xE9, 0xC2, 0xCA, 0x03}, Bytes{0xC5, 0xE8, 0xC2, 0xCA, 0x03}, Bytes{0xC5, 0xEA, 0x2E, 0xC8}, Bytes{0xC5, 0xEA, 0xC2, 0xCA}, Bytes{0xC4, 0xE2, 0xEB, 0xC2, 0xCB, 0x03}, Bytes{0x62, 0xD1, 0x76, 0x08, 0xC2, 0xCB, 0x03}, Bytes{0xF3, 0x0F, 0xC2, 0xCA, 0x03}})
+        require(!match(other).has_value(), "An instruction other than a Rosetta-hazard scalar compare was moved");
+    require(!Codegen::MakeAmd64OnlyInstructionMatcher()->Match(compare.data(), compare.size()).has_value(), "A scalar compare was moved for an Intel host");
+    const std::vector<std::span<const std::uint8_t>> pair = {std::span<const std::uint8_t>(compare), std::span<const std::uint8_t>(rip)};
+    const auto sequence = rosetta->MatchSequence(pair, {});
+    require(sequence && sequence->InstructionName == "scalar compare" && sequence->ReturnBranchOffset == 14 && sequence->Relocations.size() == 1 && sequence->Relocations[0].SiteTarget == 5 + 9 + 0x100, "A scalar compare after another is not emitted out of line in one stub");
+}
+
+void converterRosettaScalarCompare() {
+    const auto converter = Codegen::MakeAmd64OnlyConverter(Codegen::Amd64OnlyTarget::Rosetta);
+    Bytes file(0x300, 0xCC);
+    const Bytes text = {
+        0xC5, 0xFA, 0x10, 0x15, 0x10, 0x00, 0x00, 0x00,
+        0xC5, 0xF8, 0x28, 0xC2,
+        0xC5, 0xEA, 0xC2, 0xCA, 0x03,
+        0xC5, 0xF8, 0x28, 0x0D, 0x20, 0x00, 0x00, 0x00,
+        0xC5, 0xF8, 0x2E, 0xC8,
+        0xC3};
+    std::copy(text.begin(), text.end(), file.begin() + 0x200);
+    const auto result = converter->Convert(file, {segmentHeader(text.size())});
+    require(result.ReplacedCount == 0 && result.KeptCount == 0 && result.Trampolines.size() == 1 && result.Reports.size() == 1 && result.Reports[0].InstructionName == "scalar compare" && result.Reports[0].Offset == 0x20C && result.Reports[0].Lowering == Codegen::Amd64OnlyLowering::Trampoline, "The Rosetta-hazard compare in the fmax shape was not the only moved instruction");
+    const auto& site = result.Trampolines[0];
+    require(site.Offset == 0x20C && site.Length == 5 && site.ReturnBranchOffset == 5 && Bytes(site.Body.begin(), site.Body.begin() + 5) == Bytes(text.begin() + 12, text.begin() + 17) && Bytes(site.Body.begin() + 5, site.Body.begin() + 10) == Bytes{0xE9, 0, 0, 0, 0} && site.Relocations.empty(), "The compare stub does not run the compare unchanged and return");
+    require(result.Bytes == file, "Moving the compare changed the file image");
+    auto branchInside = file;
+    const Bytes jumped = {0xEB, 0x02, 0xC5, 0xEA, 0xC2, 0xCA, 0x03, 0xC3};
+    std::copy(jumped.begin(), jumped.end(), branchInside.begin() + 0x200);
+    const auto kept = converter->Convert(branchInside, {segmentHeader(jumped.size())});
+    require(kept.Trampolines.empty() && kept.KeptCount == 1 && kept.Reports.size() == 1 && kept.Reports[0].Lowering == Codegen::Amd64OnlyLowering::Kept && kept.Bytes == branchInside, "A branch into the compare did not keep it native");
+    auto ripSource = file;
+    const Bytes ripText = {0xC5, 0xEA, 0xC2, 0x0D, 0x00, 0x01, 0x00, 0x00, 0x03, 0xC3};
+    std::copy(ripText.begin(), ripText.end(), ripSource.begin() + 0x200);
+    const auto ripMoved = converter->Convert(ripSource, {segmentHeader(ripText.size())});
+    require(ripMoved.Trampolines.size() == 1 && ripMoved.Trampolines[0].Relocations.size() == 1 && ripMoved.Trampolines[0].Relocations[0].SiteTarget == 9 + 0x100, "A RIP-relative compare source was not relocated");
+    const auto intel = Codegen::MakeAmd64OnlyConverter()->Convert(file, {segmentHeader(text.size())});
+    require(intel.Reports.empty() && intel.Bytes == file, "The Intel target moved a scalar compare");
 }
 
 void reciprocalOperands() {
@@ -1635,8 +1727,11 @@ int main() {
         converterClzero();
         rosettaSubstitutions();
         converterRosetta();
+        rosettaScalarCompares();
+        converterRosettaScalarCompare();
         wideStoreSplit();
         converterWideStoreWindows();
+        converterJumpTableTargets();
         converterReciprocal();
         converterStrayRex();
         rewriterStrayRex();

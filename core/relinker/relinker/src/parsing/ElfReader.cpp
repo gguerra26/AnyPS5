@@ -3,6 +3,7 @@
 #include <relinker/domain/Types.hpp>
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 namespace Relinker {
 
@@ -23,6 +24,10 @@ ElfReader::ElfReader(std::vector<std::uint8_t> fileBuffer)
 
 const std::vector<std::uint8_t>& ElfReader::GetRawBytes() const {
     return _fileBuffer;
+}
+
+std::vector<std::uint8_t> ElfReader::TakeBytes() {
+    return std::move(_fileBuffer);
 }
 
 std::string ElfReader::formatMagic() const {
@@ -88,6 +93,10 @@ ElfHeader ElfReader::ReadHeader() const {
         throw RelinkerException("Expected little-endian ELF64 version 1");
     if (_readU16At(0x12) != 62)
         throw RelinkerException("Expected an x86-64 ELF");
+    if (_readU32At(0x14) != 1)
+        throw RelinkerException("Unsupported ELF object version: expected 1", 0x14);
+    if (_readU16At(0x34) != 64)
+        throw RelinkerException("Invalid ELF header size: expected 64 bytes", 0x34);
 
     ElfHeader header{};
     header.Machine = _readU16At(0x12);
@@ -126,8 +135,34 @@ std::vector<ProgramHeader> ElfReader::ReadProgramHeaders() const {
         ph.MemorySize = _readU64At(offset + 0x28);
         ph.Alignment = _readU64At(offset + 0x30);
 
+        if (ph.Type == PT_LOAD && ph.FileSize > ph.MemorySize)
+            throw RelinkerException("PT_LOAD file size exceeds memory size", ph.Offset);
+        if (ph.Type == PT_LOAD && !_rangeFits(ph.Offset, ph.FileSize, _fileBuffer.size()))
+            throw RelinkerException("Segment offset out of bounds", ph.Offset);
+
         headers.push_back(ph);
         offset += header.ProgramHeaderEntrySize;
+    }
+
+    for (auto& relro : headers) {
+        if (relro.Type != PT_OS_RELRO || relro.MemorySize == 0) continue;
+        bool covered = false;
+        for (const auto& load : headers) {
+            if (load.Type != PT_LOAD || load.MemorySize == 0) continue;
+            const bool overlaps = relro.MappedAddress < load.MappedAddress ? load.MappedAddress - relro.MappedAddress < relro.MemorySize : relro.MappedAddress - load.MappedAddress < load.MemorySize;
+            if (!overlaps) continue;
+            if (relro.MappedAddress < load.MappedAddress || relro.MemorySize > load.MemorySize - (relro.MappedAddress - load.MappedAddress))
+                throw RelinkerException("PT_SCE_RELRO partially overlaps a PT_LOAD segment", relro.MappedAddress);
+            covered = true;
+        }
+        if (!covered) {
+            if (relro.FileSize > relro.MemorySize)
+                throw RelinkerException("PT_SCE_RELRO file size exceeds memory size", relro.Offset);
+            if (!_rangeFits(relro.Offset, relro.FileSize, _fileBuffer.size()))
+                throw RelinkerException("Segment offset out of bounds", relro.Offset);
+            relro.Type = PT_LOAD;
+            relro.Flags = PF_R | PF_W;
+        }
     }
 
     return headers;
@@ -232,12 +267,8 @@ std::vector<DynamicTag> ElfReader::ReadDynamicTags(const ProgramHeader& dynamicH
 FileByteOffset ElfReader::TranslateVirtualAddress(VirtualAddress address) const {
     for (const auto& segment : ReadProgramHeaders()) {
         if (segment.Type == PT_LOAD && address >= segment.MappedAddress &&
-            address - segment.MappedAddress < segment.FileSize) {
-            if (!_rangeFits(segment.Offset, segment.FileSize, _fileBuffer.size())) {
-                throw RelinkerException("PT_LOAD file mapping out of bounds", segment.Offset);
-            }
+            address - segment.MappedAddress < segment.FileSize)
             return segment.Offset + (address - segment.MappedAddress);
-        }
     }
 
     throw RelinkerException("Virtual address not mapped by any PT_LOAD segment", address);
@@ -261,18 +292,6 @@ std::vector<std::uint8_t> ElfReader::ReadSegment(const ProgramHeader& header) co
     return std::vector<std::uint8_t>(
         _fileBuffer.begin() + header.Offset,
         _fileBuffer.begin() + header.Offset + header.FileSize);
-}
-
-std::vector<ProgramHeader> ElfReader::ReadCodeSegments() const {
-    static constexpr std::uint32_t kPtLoad = 1;
-    static constexpr std::uint32_t kPfX = 0x1;
-    std::vector<ProgramHeader> result;
-    for (const auto& ph : ReadProgramHeaders()) {
-        if (ph.Type == kPtLoad && (ph.Flags & kPfX)) {
-            result.push_back(ph);
-        }
-    }
-    return result;
 }
 
 std::uint64_t ElfReader::GetFileSize() const {

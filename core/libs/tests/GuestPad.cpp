@@ -113,6 +113,24 @@ static void CheckTiltCorrection(int handle) {
     PadPublishInput_nid_postfix(PadInputState{});
 }
 
+static void CheckAngularVelocityDeadband(int handle) {
+    PadInputState moving;
+    moving.hasMotion = true;
+    moving.accel = {0.0f, 9.80665f, 0.0f};
+    moving.gyro = {0.01f, 0.0175f, -0.017f};
+    PadPublishInput_nid_postfix(moving);
+    PadData data{};
+    Require(scePadReadState(handle, &data) == PAD_OK);
+    Require(data.angular_velocity_x == 0.01f && data.angular_velocity_y == 0.0175f && data.angular_velocity_z == -0.017f);
+    Require(scePadSetAngularVelocityDeadbandState(handle, true) == PAD_OK);
+    Require(scePadReadState(handle, &data) == PAD_OK);
+    Require(data.angular_velocity_x == 0.0f && data.angular_velocity_y == 0.0175f && data.angular_velocity_z == 0.0f);
+    Require(scePadSetAngularVelocityDeadbandState(handle, false) == PAD_OK);
+    Require(scePadReadState(handle, &data) == PAD_OK);
+    Require(data.angular_velocity_x == 0.01f && data.angular_velocity_z == -0.017f);
+    PadPublishInput_nid_postfix(PadInputState{});
+}
+
 static void CheckTouchContact() {
     PadInputState touch;
     touch.buttons = static_cast<std::uint32_t>(Pad::PadButton::TouchPad);
@@ -232,6 +250,21 @@ int main() {
 #else
     Require(setenv("APS5_PAD_INPUT_FILE", path.string().c_str(), 1) == 0);
 #endif
+    {
+        std::uint32_t sequence = 0;
+        PadOutputState snapshot;
+        Pad::SetVibration(12, 34);
+        PadSubmitAudioHaptics_nid_postfix(100, 150);
+        Require(PadFetchOutput_nid_postfix(&sequence, &snapshot));
+        Require(snapshot.audioVibrationLarge == 100 && snapshot.audioVibrationSmall == 150);
+        Require(snapshot.vibrationLarge == 12 && snapshot.vibrationSmall == 34);
+        PadSubmitAudioHaptics_nid_postfix(0, 0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        Require(PadFetchOutput_nid_postfix(&sequence, &snapshot));
+        Require(snapshot.audioVibrationLarge == 0 && snapshot.audioVibrationSmall == 0);
+        Require(snapshot.vibrationLarge == 12 && snapshot.vibrationSmall == 34);
+        Pad::SetVibration(0, 0);
+    }
     constexpr int noHandle = static_cast<int>(0x80920008);
     constexpr int user = 0x10000000;
 
@@ -253,6 +286,7 @@ int main() {
     Require(scePadGetHandle(user, PAD_PORT_TYPE_SPECIAL, 0) == noHandle);
     Require(scePadGetHandle(user, 0, 0) == handle);
     CheckTiltCorrection(handle);
+    CheckAngularVelocityDeadband(handle);
     CheckTouchContact();
     CheckPartialTrigger();
     CheckReadQueue(handle);
@@ -263,6 +297,8 @@ int main() {
     Require(scePadSetVibrationMode(handle, 2) == 0);
     Require(scePadSetVibrationMode(handle, 3) == 0);
     Require(scePadSetVibrationMode(handle, 4) == PAD_ERROR_INVALID_ARG);
+    Require(scePadSetVibrationMode(handle, 5) == 0);
+    Require(scePadSetVibrationMode(handle, 6) == PAD_ERROR_INVALID_ARG);
     Require(scePadSetVibrationMode(handle, -1) == PAD_ERROR_INVALID_ARG);
     Require(scePadGetHandle(0xff, 16, 0) == handle);
     Require(scePadGetHandle(user, 16, 0) == noHandle);
@@ -272,6 +308,7 @@ int main() {
     Require(scePadSetVibrationTriggerEffectWeakWhileEmbeddedMicInUse(true) == 0);
     Require(scePadSetAngularVelocityDeadbandState(handle, false) == 0);
     Require(scePadSetAngularVelocityDeadbandState(handle + 1, false) == PAD_ERROR_INVALID_HANDLE);
+    Require(scePadSetAngularVelocityDeadbandState(handle + 1, true) == PAD_ERROR_INVALID_HANDLE);
     Require(scePadSetAngularVelocityBiasCorrectionState(handle, false) == PAD_OK);
     Require(scePadSetAngularVelocityBiasCorrectionState(handle + 1, false) == PAD_ERROR_INVALID_HANDLE);
 }

@@ -178,4 +178,12 @@ unsigned __int128 APS5_VABI __udivti3_nid_postfix(unsigned __int128 dividend, un
     return SonyUdivti3(dividend, divisor);
 }
 
+unsigned __int128 APS5_VABI __umodti3_nid_postfix(unsigned __int128 dividend, unsigned __int128 divisor) {
+    return SonyUmodti3(dividend, divisor);
+}
+
+void APS5_VABI _ZNSt8ios_base7_AddstdEPS__nid_postfix(void*) {
+    NotImplemented_nid_no_patch(__func__);
+}
+
 }
