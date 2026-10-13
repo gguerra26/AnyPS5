@@ -21,6 +21,7 @@ struct IrProgramMetadata {
     std::uint32_t pixelPerspectiveInputs = 0;
     std::uint32_t pixelVertexOrderInputs = 0;
     bool barycentricEmulation = false;
+    bool barycentricBuiltinsUnnormalized = false;
     bool invalidatesCaches = false;
     std::vector<IrValue*> dynamicReads;
     bool shaderInfoComplete = false;
