@@ -8,7 +8,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -170,11 +172,27 @@ int parseDeadzonePercent(std::string_view value) {
     return parsed;
 }
 
+template<typename TNumber>
+bool parseFloatingNumber(std::string_view value, TNumber& parsed) {
+    if (value.empty()) return false;
+    if constexpr (requires { std::from_chars(value.data(), value.data() + value.size(), parsed); }) {
+        const auto end = value.data() + value.size();
+        const auto result = std::from_chars(value.data(), end, parsed);
+        return result.ec == std::errc{} && result.ptr == end;
+    } else {
+        if (value.front() == '+' || value.find_first_not_of("0123456789.eE+-") != std::string_view::npos) return false;
+        std::istringstream input{std::string(value)};
+        input.imbue(std::locale::classic());
+        input >> std::noskipws >> parsed;
+        const auto mantissa = value.substr(0, value.find_first_of("eE"));
+        const bool underflow = parsed == 0 && mantissa.find_first_of("123456789") != std::string_view::npos;
+        return input && input.eof() && !underflow;
+    }
+}
+
 double parseMouseSensitivity(std::string_view value) {
     double parsed = 0.0;
-    const auto end = value.data() + value.size();
-    const auto result = std::from_chars(value.data(), end, parsed);
-    if (result.ec != std::errc{} || result.ptr != end || !(parsed > 0.0) || parsed > Pad::MaxMouseSensitivity) {
+    if (!parseFloatingNumber(value, parsed) || !(parsed > 0.0) || parsed > Pad::MaxMouseSensitivity) {
         throw std::runtime_error("mouse sensitivity must be a number greater than 0 and at most 10");
     }
     return parsed;
@@ -188,9 +206,7 @@ std::string formatNumber(double value) {
 
 double parseNumber(std::string_view value, std::string_view name, double minimum, double maximum) {
     double parsed = 0.0;
-    const auto end = value.data() + value.size();
-    const auto result = std::from_chars(value.data(), end, parsed);
-    if (value.empty() || result.ec != std::errc{} || result.ptr != end || !std::isfinite(parsed) || parsed < minimum || parsed > maximum) {
+    if (!parseFloatingNumber(value, parsed) || !std::isfinite(parsed) || parsed < minimum || parsed > maximum) {
         throw std::runtime_error(std::string(name) + " must be a number from " + formatNumber(minimum) + " to " + formatNumber(maximum));
     }
     return parsed;

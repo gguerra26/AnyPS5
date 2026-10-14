@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <locale>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -62,6 +63,12 @@ void settingsParse() {
     bool crossOnF = false;
     for (const auto& binding : configuration.bindings) crossOnF = crossOnF || (binding.control == Pad::InputControl::Button && binding.button == Pad::PadButton::Cross && binding.key == SDL_SCANCODE_F);
     require(crossOnF, "bindings are read alongside settings");
+    useConfig("MouseSensitivity = 1.25e-1\nMouseVerticalScale = 5e-1\nMouseSmoothingMs = 0e-999\n");
+    const auto scientific = Pad::LoadInputMapping().settings;
+    require(scientific.mouseSensitivity == 0.125 && scientific.mouseVerticalScale == 0.5 && scientific.mouseSmoothingMs == 0.0, "scientific notation and zero exponents are read");
+    useConfig("MouseSensitivity = 10\nMouseSmoothingMs = 500\nMouseDecayMs = 1000\n");
+    const auto bounds = Pad::LoadInputMapping().settings;
+    require(bounds.mouseSensitivity == 10.0 && bounds.mouseSmoothingMs == 500.0 && bounds.mouseDecayMs == 1000.0, "upper bounds are accepted");
 }
 
 void settingsReject() {
@@ -72,6 +79,10 @@ void settingsReject() {
     require(rejects("MouseSensitivity = 0\n"), "a zero mouse sensitivity is rejected");
     require(rejects("MouseSensitivity = 10.5\n"), "a mouse sensitivity above 10 is rejected");
     require(rejects("MouseSensitivity = fast\n"), "a non-numeric mouse sensitivity is rejected");
+    for (const auto setting : {"MouseSensitivity", "MouseSmoothingMs"}) {
+        for (const auto value : {"", "+1", "1.5junk", "1,5", "nan", "inf", "1e999", "1e-999", "0x1p0", "1 e0"})
+            require(rejects(std::string(setting) + " = " + value + "\n"), "invalid floating-point setting is rejected");
+    }
     require(rejects("MouseSensitivity = 1\nMouseSensitivity = 2\n"), "a setting given twice is rejected");
 }
 
@@ -103,6 +114,25 @@ void mouseLookReject() {
     require(rejects("MouseMaxSpeed = nan\n"), "a non-finite max speed is rejected");
     require(rejects("MouseVerticalScale = 11\n"), "a vertical scale above 10 is rejected");
     require(rejects("MouseDecayMs = 20\nmousedecayms = 30\n"), "a mouse setting given twice is rejected");
+}
+
+class CommaDecimal : public std::numpunct<char> {
+protected:
+    char do_decimal_point() const override { return ','; }
+};
+
+void localeIndependentSettings() {
+    const auto previous = std::locale::global(std::locale(std::locale::classic(), new CommaDecimal));
+    try {
+        useConfig("MouseSensitivity = 1.5\nMouseVerticalScale = 0.5\n");
+        const auto settings = Pad::LoadInputMapping().settings;
+        require(settings.mouseSensitivity == 1.5 && settings.mouseVerticalScale == 0.5, "floating-point settings use the classic locale");
+        require(rejects("MouseSmoothingMs = 1,5\n"), "the process locale does not change decimal syntax");
+    } catch (...) {
+        std::locale::global(previous);
+        throw;
+    }
+    std::locale::global(previous);
 }
 
 void deadzoneOffMatchesRawSticks() {
@@ -141,6 +171,7 @@ int main() try {
     mouseLookDefault();
     mouseLookParse();
     mouseLookReject();
+    localeIndependentSettings();
     deadzoneOffMatchesRawSticks();
     deadzoneShapesSticks();
     std::filesystem::remove_all(root);
