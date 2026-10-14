@@ -38,7 +38,8 @@ void _stack(StubBodyBuilder& body, std::uint8_t opcode, bool wide, std::uint8_t 
 
 std::uint8_t _scratch(const BmiShiftOperands& operands) {
     std::array<bool, 16> used{};
-    used[kStack] = used[kCount] = used[operands.Destination] = used[operands.Count] = true;
+    used[kStack] = used[kCount] = used[operands.Destination] = true;
+    if (operands.Kind != BmiShiftKind::Rorx) used[operands.Count] = true;
     if (!operands.Memory) {
         used[operands.Source] = true;
     } else {
@@ -85,25 +86,31 @@ void _memory(StubBodyBuilder& body, const BmiShiftOperands& operands, std::uint8
 std::optional<BmiShiftOperands> DecodeBmiShift(const std::uint8_t* data, const std::size_t length) {
     std::size_t vex = 0;
     while (vex < length && _prefix(data[vex])) ++vex;
-    if (vex + 5 > length || data[vex] != 0xC4 || (data[vex + 1] & 0x1F) != 2 || data[vex + 3] != 0xF7 || (data[vex + 2] & 3) == 0)
+    if (vex + 5 > length || data[vex] != 0xC4)
+        return std::nullopt;
+    const auto map = data[vex + 1] & 0x1F;
+    const auto prefix = data[vex + 2] & 3;
+    const bool rotate = map == 3 && data[vex + 3] == 0xF0 && prefix == 3;
+    if (!rotate && !(map == 2 && data[vex + 3] == 0xF7 && prefix != 0))
         return std::nullopt;
     if ((data[vex + 2] & 4) != 0)
         throw CodegenException("BMI2 shift requires VEX.L=0");
-    const auto prefix = data[vex + 2] & 3;
+    if (rotate && ((data[vex + 2] & 0x78) != 0x78 || vex + 6 > length))
+        throw CodegenException("RORX requires reserved VEX.vvvv=1111 and an immediate");
     const auto extensions = static_cast<std::uint8_t>(~data[vex + 1]);
     const auto modrm = data[vex + 4];
     BmiShiftOperands operands{
-        prefix == 1 ? BmiShiftKind::Shlx : prefix == 2 ? BmiShiftKind::Sarx : BmiShiftKind::Shrx,
+        rotate ? BmiShiftKind::Rorx : prefix == 1 ? BmiShiftKind::Shlx : prefix == 2 ? BmiShiftKind::Sarx : BmiShiftKind::Shrx,
         static_cast<std::uint8_t>(((modrm >> 3) & 7) | ((extensions & 0x80) >> 4)),
         static_cast<std::uint8_t>((modrm & 7) | ((extensions & 0x20) >> 2)),
-        static_cast<std::uint8_t>((~data[vex + 2] >> 3) & 15),
+        rotate ? data[length - 1] : static_cast<std::uint8_t>((~data[vex + 2] >> 3) & 15),
         (data[vex + 2] & 0x80) != 0, std::nullopt};
     if ((modrm >> 6) == 3) {
-        if (vex + 5 != length) throw CodegenException("BMI2 shift register operand has trailing bytes");
+        if (vex + 5 + rotate != length) throw CodegenException("BMI2 shift register operand has trailing bytes");
     } else {
         const auto rex = static_cast<std::uint8_t>(((extensions & 0x20) >> 5) | ((extensions & 0x40) >> 5));
         operands.Memory = DecodeMemoryOperand(data, length, vex + 4, rex, {data, data + vex});
-        if (vex + 4 + operands.Memory->EncodedSize != length)
+        if (vex + 4 + operands.Memory->EncodedSize + rotate != length)
             throw CodegenException("BMI2 shift memory operand has trailing bytes");
     }
     return operands;
@@ -114,6 +121,7 @@ const char* BmiShiftName(const BmiShiftKind kind) {
         case BmiShiftKind::Shlx: return "SHLX";
         case BmiShiftKind::Shrx: return "SHRX";
         case BmiShiftKind::Sarx: return "SARX";
+        case BmiShiftKind::Rorx: return "RORX";
     }
     throw CodegenException("Unknown BMI2 shift");
 }
@@ -129,13 +137,20 @@ void EmitBmiShift(StubBodyBuilder& body, const BmiShiftOperands& operands) {
         _stack(body, 0x8D, operands.Wide, scratch, kFrameSize);
     else
         _register(body, 0x8B, operands.Wide, scratch, operands.Source);
-    if (operands.Count == kStack)
-        _stack(body, 0x8D, true, kCount, kFrameSize);
-    else
-        _register(body, 0x8B, true, kCount, operands.Count);
+    if (operands.Kind != BmiShiftKind::Rorx) {
+        if (operands.Count == kStack)
+            _stack(body, 0x8D, true, kCount, kFrameSize);
+        else
+            _register(body, 0x8B, true, kCount, operands.Count);
+    }
     body.Raw(std::array<std::uint8_t, 1>{0x9C});
-    const std::uint8_t extension = operands.Kind == BmiShiftKind::Shlx ? 4 : operands.Kind == BmiShiftKind::Shrx ? 5 : 7;
-    _register(body, 0xD3, operands.Wide, extension, scratch);
+    if (operands.Kind == BmiShiftKind::Rorx) {
+        _register(body, 0xC1, operands.Wide, 1, scratch);
+        body.Raw(std::array{operands.Count});
+    } else {
+        const std::uint8_t extension = operands.Kind == BmiShiftKind::Shlx ? 4 : operands.Kind == BmiShiftKind::Shrx ? 5 : 7;
+        _register(body, 0xD3, operands.Wide, extension, scratch);
+    }
     body.Raw(std::array<std::uint8_t, 1>{0x9D});
     _stack(body, 0x8B, true, kCount, 8);
     if (operands.Destination == kStack)

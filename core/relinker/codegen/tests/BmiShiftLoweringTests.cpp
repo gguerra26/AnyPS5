@@ -2,6 +2,7 @@
 #include <codegen/x86/IAmd64OnlyInstructionMatcher.hpp>
 #include <codegen/CodegenException.hpp>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -15,13 +16,17 @@ namespace {
 
 using Bytes = std::vector<std::uint8_t>;
 using Kind = Codegen::BmiShiftKind;
-constexpr std::array kKinds{Kind::Shlx, Kind::Shrx, Kind::Sarx};
+constexpr std::array kKinds{Kind::Shlx, Kind::Shrx, Kind::Sarx, Kind::Rorx};
 
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
 Bytes instruction(Kind kind, bool wide, std::uint8_t dst, std::uint8_t source, std::uint8_t count) {
+    if (kind == Kind::Rorx)
+        return {0xC4, static_cast<std::uint8_t>(0xE3 ^ ((dst & 8) << 4) ^ ((source & 8) << 2)),
+            static_cast<std::uint8_t>(wide ? 0xFB : 0x7B), 0xF0,
+            static_cast<std::uint8_t>(0xC0 | ((dst & 7) << 3) | (source & 7)), count};
     const auto prefix = kind == Kind::Shlx ? 1 : kind == Kind::Shrx ? 3 : 2;
     return {0xC4, static_cast<std::uint8_t>(0xE2 ^ ((dst & 8) << 4) ^ ((source & 8) << 2)),
         static_cast<std::uint8_t>((wide ? 0x80 : 0) | ((~count & 15) << 3) | prefix), 0xF7,
@@ -112,7 +117,7 @@ public:
         if (operands->Memory && operands->Memory->RipRelative) {
             auto relocated = site;
             const auto displacement = static_cast<std::int32_t>(4096 + 24 - (siteOffset + site.size()));
-            std::memcpy(relocated.data() + relocated.size() - 4, &displacement, sizeof(displacement));
+            std::memcpy(relocated.data() + relocated.size() - 4 - (operands->Kind == Kind::Rorx), &displacement, sizeof(displacement));
             operands = Codegen::DecodeBmiShift(relocated.data(), relocated.size());
         }
         Codegen::StubBodyBuilder builder;
@@ -194,11 +199,13 @@ private:
 void check(const State& state, const Codegen::BmiShiftOperands& operands, std::uint64_t source) {
     const auto bits = operands.Wide ? 64u : 32u;
     const auto mask = operands.Wide ? ~std::uint64_t{0} : 0xFFFFFFFFull;
-    const auto count = static_cast<unsigned>(state.Input[operands.Count] & (bits - 1));
+    const auto count = static_cast<unsigned>((operands.Kind == Kind::Rorx ? operands.Count : state.Input[operands.Count]) & (bits - 1));
     const auto value = source & mask;
     auto expected = operands.Kind == Kind::Shlx ? value << count : value >> count;
     if (operands.Kind == Kind::Sarx && count && (value >> (bits - 1)))
         expected |= mask << (bits - count);
+    if (operands.Kind == Kind::Rorx)
+        expected = operands.Wide ? std::rotr(value, static_cast<int>(count)) : std::rotr(static_cast<std::uint32_t>(value), static_cast<int>(count));
     expected &= mask;
     for (std::size_t reg = 0; reg < 16; ++reg)
         require(state.Output[reg] == (reg == operands.Destination ? expected : state.Input[reg]), "BMI2 shift changed a source/scratch register or produced an incorrect result");
@@ -214,7 +221,7 @@ State initialState(std::uint64_t flags) {
 }
 
 void execution() {
-    for (const auto kind : kKinds) {
+    for (const auto kind : {Kind::Shlx, Kind::Shrx, Kind::Sarx}) {
         for (bool wide : {false, true}) {
             for (std::uint8_t dst = 0; dst < 16; ++dst) {
                 for (const auto pair : {std::pair<std::uint8_t, std::uint8_t>{1, 6}, {dst, 10}, {11, dst}, {dst, dst}, {4, 9}, {9, 4}, {1, 1}, {1, dst}, {dst, 1}, {4, 4}, {12, 13}, {13, 12}, {15, 14}}) {
@@ -259,6 +266,37 @@ void execution() {
             state.Input[12] = reinterpret_cast<std::uint64_t>(executable.Memory()) - 16 - 3 * 2;
             state.Input[11] = 3;
             state.Input[10] = 31;
+            executable.Run(state);
+            check(state, *Codegen::DecodeBmiShift(site.data(), site.size()), value);
+        }
+    }
+    for (bool wide : {false, true}) {
+        for (std::uint8_t dst = 0; dst < 16; ++dst) {
+            for (const auto src : {std::uint8_t{0}, std::uint8_t{1}, std::uint8_t{4}, std::uint8_t{11}, dst}) {
+                for (const auto count : {0, 1, 31, 32, 63, 64, 65, 255}) {
+                    const auto site = instruction(Kind::Rorx, wide, dst, src, static_cast<std::uint8_t>(count));
+                    Execution executable(site, 0);
+                    for (const auto value : {0ull, 1ull, 0x8000000080000000ull, ~0ull}) {
+                        auto state = initialState((count & 1) ? 0xCD5 : 0);
+                        state.Input[src] = value;
+                        executable.Run(state);
+                        check(state, *Codegen::DecodeBmiShift(site.data(), site.size()), state.Input[src]);
+                    }
+                }
+            }
+        }
+        for (const Bytes tail : {Bytes{0x06}, Bytes{0x46, 0x10}, Bytes{0x84, 0x24, 0x40, 0, 0, 0}, Bytes{0x04, 0xCA}, Bytes{0x05, 0, 0, 0, 0}}) {
+            auto site = instruction(Kind::Rorx, wide, 0, 0, 0);
+            site.resize(4);
+            site.insert(site.end(), tail.begin(), tail.end());
+            site.push_back(18);
+            constexpr std::uint64_t value = 0xFEDCBA9876543210ull;
+            Execution executable(site, value);
+            auto state = initialState(0xCD5);
+            state.Input[6] = reinterpret_cast<std::uint64_t>(executable.Memory()) - (tail[0] == 0x46 ? 16 : 0);
+            state.Input[2] = reinterpret_cast<std::uint64_t>(executable.Memory()) - 3 * 8;
+            state.Input[1] = 3;
+            state.Output[0] = value;
             executable.Run(state);
             check(state, *Codegen::DecodeBmiShift(site.data(), site.size()), value);
         }
