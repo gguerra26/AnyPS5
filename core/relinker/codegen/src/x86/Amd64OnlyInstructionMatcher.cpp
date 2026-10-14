@@ -12,6 +12,7 @@
 #include <codegen/x86/Sha1Lowering.hpp>
 #include <codegen/x86/Sha1Operands.hpp>
 #include <codegen/x86/StubBodyBuilder.hpp>
+#include <codegen/x86/MulxLowering.hpp>
 #include <codegen/x86/WideStoreLowering.hpp>
 #include <codegen/x86/WideStoreOperands.hpp>
 #include <codegen/x86/X64InstructionDecoder.hpp>
@@ -208,6 +209,8 @@ Amd64OnlyMatch Amd64OnlyInstructionMatcher::_matchClzero(const DecodedInstructio
 std::optional<Amd64OnlyMatch> Amd64OnlyInstructionMatcher::_matchRosetta(const DecodedInstruction& instr, std::span<const std::uint8_t> trailing) const {
     if (_target != Amd64OnlyTarget::Rosetta)
         return std::nullopt;
+    if (const auto mulx = DecodeMulx(instr.Data, instr.Length))
+        return _trampoline("MULX", instr.Length, _outOfLine(instr.Length, trailing, [&](StubBodyBuilder& body) { EmitMulx(body, *mulx); }));
     if (instr.IsRdseed()) {
         std::vector<std::uint8_t> replacement(instr.Data, instr.Data + instr.Length);
         replacement[instr.OpcodeOffset() + 2] &= static_cast<std::uint8_t>(~(1u << X64OpcodeConstants::ModRmRegShift));
@@ -249,6 +252,10 @@ const char* Amd64OnlyInstructionMatcher::_emitOutOfLine(StubBodyBuilder& body, c
     if (_target == Amd64OnlyTarget::Rosetta && instr.IsRdpid()) {
         body.Raw(_rdpidReplacement(instr));
         return kRdpid.Name;
+    }
+    if (const auto mulx = _target == Amd64OnlyTarget::Rosetta ? DecodeMulx(instr.Data, instr.Length) : std::nullopt) {
+        EmitMulx(body, *mulx);
+        return "MULX";
     }
     if (const auto wide = _target == Amd64OnlyTarget::Rosetta ? DecodeVexWideStore(instr.Data, instr.Length) : std::nullopt) {
         _wideStoreLowering.EmitOutOfLine(body, *wide);
