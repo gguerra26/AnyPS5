@@ -6,7 +6,7 @@
 
 namespace Codegen {
 
-enum class BmiShiftKind { Shlx, Shrx, Sarx };
+enum class BmiShiftKind { Shlx, Shrx, Sarx, Rorx };
 
 struct BmiShiftOperands {
     BmiShiftKind Kind;
