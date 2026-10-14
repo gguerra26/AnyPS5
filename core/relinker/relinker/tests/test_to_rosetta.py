@@ -52,7 +52,7 @@ def main():
             assert (LOWERED in data and SITES not in data) if lowered else (SITES in data and LOWERED not in data), f"{options} {'did not lower' if lowered else 'changed'} RDSEED and CLWB"
         result, _ = relink(relinker, directory, "windows", "--to-rosetta", "--windows")
         assert result.returncode != 0 and "--to-rosetta conflicts with --windows" in result.stdout + result.stderr, "--to-rosetta together with --windows was accepted"
-        for name, encoding in (("SHLX", "c462f9f7c2"), ("SHRX", "c462fbf7c2"), ("SARX", "c462faf7c2"), ("RORX", "c4e37bf0d112")):
+        for name, encoding in (("SHLX", "c462f9f7c2"), ("SHRX", "c462fbf7c2"), ("SARX", "c462faf7c2"), ("RORX", "c4e37bf0d112"), ("BEXTR", "c4e2f8f7c1"), ("BZHI", "c4e2f8f5c1"), ("BLSR", "c4e2f8f3c9")):
             code = bytes.fromhex(encoding + "c3")
             for target in ((), ("--macos",)):
                 for conversion in ((), ("--to-intel",), ("--to-rosetta",)):
