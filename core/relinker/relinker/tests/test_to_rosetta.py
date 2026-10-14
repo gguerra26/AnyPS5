@@ -63,6 +63,16 @@ def main():
                     assert (code not in output.read_bytes()) == lowered, f"{options} {'did not lower' if lowered else 'changed'} {name}"
                     if lowered:
                         assert name in result.stdout, result.stdout
+        andn = bytes.fromhex("c4e2f0f2c6c3")
+        for target in ((), ("--macos",)):
+            for conversion in ((), ("--to-intel",), ("--to-rosetta",)):
+                options = target + conversion
+                result, output = relink(relinker, directory, "andn" + "".join(options), *options, code=andn)
+                assert result.returncode == 0, (options, result.stdout, result.stderr)
+                lowered = conversion == ("--to-rosetta",)
+                assert (andn not in output.read_bytes()) == lowered, f"{options} {'did not lower' if lowered else 'changed'} ANDN"
+                if lowered:
+                    assert "ANDN" in result.stdout, result.stdout
     print("--to-rosetta integration tests passed")
 
 
