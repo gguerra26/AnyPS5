@@ -436,7 +436,11 @@ static int NativeFstatfs(int descriptor, KernelStatfs* fs) {
 #endif
     struct stat file{};
     if (::fstat(descriptor, &file) != 0) return SceErrorFromErrno(errno) & 0xffff;
+#ifdef __APPLE__
+    if (S_ISSOCK(file.st_mode)) return GUEST_EINVAL;
+#else
     if (S_ISSOCK(file.st_mode) && (::fcntl(descriptor, F_GETFL) & O_PATH) == 0) return GUEST_EINVAL;
+#endif
     if (S_ISFIFO(file.st_mode)) {
 #ifdef __APPLE__
         return GUEST_EINVAL;

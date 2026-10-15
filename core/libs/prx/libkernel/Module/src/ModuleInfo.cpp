@@ -226,11 +226,13 @@ std::uint64_t GuestSegmentBytes() {
     return bytes;
 }
 
+#ifndef __APPLE__
 bool SystemImage(const GuestImage& image) {
     const auto* name = static_cast<const link_map*>(image.native)->l_name;
     const std::string_view path = name ? name : "";
     return !path.empty() && !path.ends_with(GuestModuleSuffix);
 }
+#endif
 #else
 bool SectionNamed(const IMAGE_SECTION_HEADER& section, const char* name) {
     return std::strncmp(reinterpret_cast<const char*>(section.Name), name, IMAGE_SIZEOF_SHORT_NAME) == 0;
@@ -376,6 +378,7 @@ bool SystemImage(const GuestImage& image) {
 }
 #endif
 
+#ifndef __APPLE__
 int FillModuleInfo(KernelModule handle, ModuleInfo* info, bool titleOnly) {
     if (!info) return SCE_KERNEL_ERROR_EFAULT;
     if (info->st_size != sizeof(ModuleInfo)) return SCE_KERNEL_ERROR_EINVAL;
@@ -406,6 +409,7 @@ int FillModuleList(KernelModule* handles, std::size_t count, std::size_t* actual
     *actual = images.size();
     return 0;
 }
+#endif
 
 }
 
@@ -465,18 +469,27 @@ int APS5_VABI sceKernelGetModuleInfo(KernelModule handle, ModuleInfo* info) {
 int APS5_VABI sceKernelGetModuleInfo2(KernelModule handle, ModuleInfo* info) {
     return FillModuleInfo(handle, info, true);
 }
+#endif
 
 std::int32_t APS5_VABI sceKernelGetLibkernelTextLocation_nid_postfix(void** address, std::size_t* size) {
     if (!address || !size) throw std::invalid_argument("sceKernelGetLibkernelTextLocation: null argument");
+    ModuleInfo info{};
+#ifdef __APPLE__
+    const bool found = dl_iterate_phdr([](dl_phdr_info* image, std::size_t, void* data) {
+        if (image->dlpi_name != nullptr && image->dlpi_name[0] != '\0') return 0;
+        Fill(*image, *static_cast<ModuleInfo*>(data));
+        return 1;
+    }, &info) != 0;
+#else
     const auto images = GuestImages();
     if (images.empty()) throw std::runtime_error("sceKernelGetLibkernelTextLocation: the main program is not loaded");
-    ModuleInfo info{};
 #ifdef _WIN32
     const bool found = Fill(images.front().address, info);
 #else
     ImageSearch<ModuleInfo> search{images.front().address, &info, false};
     dl_iterate_phdr(FindImage<ModuleInfo>, &search);
     const bool found = search.found;
+#endif
 #endif
     if (!found || info.segment_count == 0)
         throw std::runtime_error("sceKernelGetLibkernelTextLocation: the main program has no segments");
@@ -494,7 +507,6 @@ std::int32_t APS5_VABI sceKernelInternalMemoryGetModuleSegmentInfo_nid_postfix(I
     *result = {reinterpret_cast<std::uintptr_t>(address), size};
     return 0;
 }
-#endif
 
 std::uint64_t GuestImageSegmentBytes_nid_no_patch() {
     return GuestSegmentBytes();
