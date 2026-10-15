@@ -62,6 +62,13 @@ void settingsParse() {
     bool crossOnF = false;
     for (const auto& binding : configuration.bindings) crossOnF = crossOnF || (binding.control == Pad::InputControl::Button && binding.button == Pad::PadButton::Cross && binding.key == SDL_SCANCODE_F);
     require(crossOnF, "bindings are read alongside settings");
+    useConfig("MouseSensitivity = 1.25e-1\n");
+    require(Pad::LoadInputMapping().settings.mouseSensitivity == 0.125, "scientific notation is read");
+    useConfig("MouseSensitivity = 10\n");
+    require(Pad::LoadInputMapping().settings.mouseSensitivity == 10.0, "the upper sensitivity bound is accepted");
+    useConfig("MouseSmoothingMs = 1.25e1\nMouseDeadzoneOffset = 0\n");
+    require(Pad::LoadInputMapping().settings.mouseSmoothingMs == 12.5, "mouse settings accept scientific notation");
+    require(Pad::LoadInputMapping().settings.mouseDeadzoneOffset == 0.0, "mouse settings accept a zero lower bound");
 }
 
 void settingsReject() {
@@ -72,6 +79,15 @@ void settingsReject() {
     require(rejects("MouseSensitivity = 0\n"), "a zero mouse sensitivity is rejected");
     require(rejects("MouseSensitivity = 10.5\n"), "a mouse sensitivity above 10 is rejected");
     require(rejects("MouseSensitivity = fast\n"), "a non-numeric mouse sensitivity is rejected");
+    require(rejects("MouseSensitivity = +1\n"), "a leading plus is rejected");
+    require(rejects("MouseSensitivity = 1.5junk\n"), "trailing text is rejected");
+    require(rejects("MouseSensitivity = 1,5\n"), "a locale-specific decimal separator is rejected");
+    require(rejects("MouseSensitivity = nan\n"), "a NaN sensitivity is rejected");
+    require(rejects("MouseSensitivity = inf\n"), "an infinite sensitivity is rejected");
+    require(rejects("MouseCurve = +1\n"), "a leading plus in a mouse setting is rejected");
+    require(rejects("MouseCurve = nan\n"), "a NaN mouse setting is rejected");
+    require(rejects("MouseCurve = 1junk\n"), "trailing text in a mouse setting is rejected");
+    require(rejects("MouseCurve = 0.1\n"), "a mouse setting below its lower bound is rejected");
     require(rejects("MouseSensitivity = 1\nMouseSensitivity = 2\n"), "a setting given twice is rejected");
 }
 
