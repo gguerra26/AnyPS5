@@ -271,7 +271,7 @@ int main() {
             Require(!replay.request.context.pixel->ditheredAlphaToCoverage && replay.request.context.pixel->reversedBlend == 0u);
             Require(replay.request.context.pixel->rasterPrimitive == ShaderRecompiler::RasterPrimitive::Rectangle);
             Require(replay.request.context.vertex->paClVsOutCntl == 0x00050a05u);
-            Require(replay.request.target.float16DenormPreserve == preserve && replay.request.target.fragmentBarycentricBuiltins == !preserve);
+            Require(replay.request.target.float16DenormPreserve == preserve && !replay.request.target.fragmentBarycentricBuiltins);
             bytes[4] = 31u;
             bytes.insert(bytes.begin() + 259u, {0u, 0u});
             InsertPixelDefaultsAfterFrontFace(bytes);
